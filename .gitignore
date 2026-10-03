@@ -4,8 +4,6 @@
 .env.local
 !.env.example
 
-# Documentation / Internal guides (as requested)
-guide/
 
 # Virtual Environment
 .venv/
