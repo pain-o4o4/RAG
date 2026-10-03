@@ -1,0 +1,107 @@
+@import '../../styles/variables';
+@import '../../styles/mixins';
+
+.homepage-wrapper {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+
+    .hero-section {
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        padding: 5rem 1.5rem 4rem;
+        border-bottom: 1px solid $border-color;
+
+        .hero-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .badge-pill {
+            display: inline-block;
+            background-color: rgba(13, 110, 253, 0.08);
+            color: $primary-color;
+            padding: 0.4rem 1rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: $font-weight-semibold;
+            border: 1px solid rgba(13, 110, 253, 0.2);
+        }
+
+        .hero-title {
+            font-size: 2.75rem;
+            font-weight: 800;
+            color: $text-main;
+            letter-spacing: -1px;
+            margin-bottom: 1.25rem;
+            line-height: 1.2;
+        }
+
+        .hero-subtitle {
+            font-size: 1.15rem;
+            color: $text-muted;
+            line-height: 1.6;
+        }
+
+        .cta-btn {
+            font-weight: $font-weight-semibold;
+            border-radius: $border-radius;
+            box-shadow: 0 4px 14px rgba(13, 110, 253, 0.3);
+            @include transition-smooth;
+
+            &:hover {
+                box-shadow: 0 6px 20px rgba(13, 110, 253, 0.4);
+                transform: translateY(-1px);
+            }
+        }
+    }
+
+    .features-section {
+        background-color: $light-bg;
+        flex: 1;
+
+        .section-title {
+            font-weight: $font-weight-bold;
+            font-size: 2rem;
+            color: $text-main;
+            letter-spacing: -0.5px;
+        }
+
+        .feature-card {
+            background-color: #ffffff;
+            border: 1px solid $border-color;
+            border-radius: $border-radius;
+            padding: 1.75rem;
+            height: 100%;
+            @include transition-smooth;
+
+            &:hover {
+                transform: translateY(-4px);
+                box-shadow: $box-shadow-lg;
+                border-color: rgba(13, 110, 253, 0.3);
+            }
+
+            .icon-wrapper {
+                width: 56px;
+                height: 56px;
+                border-radius: 12px;
+                background-color: #f8fafc;
+                border: 1px solid $border-color;
+                @include flex-center;
+            }
+
+            .card-title {
+                font-size: 1.15rem;
+                font-weight: $font-weight-semibold;
+                color: $text-main;
+                margin-bottom: 0.6rem;
+            }
+
+            .card-text {
+                font-size: 0.9rem;
+                color: $text-muted;
+                line-height: 1.5;
+                margin-bottom: 0;
+            }
+        }
+    }
+}

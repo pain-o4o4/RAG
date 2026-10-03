@@ -1,0 +1,31 @@
+# Web Framework & Server
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+python-multipart>=0.0.18
+python-dotenv>=1.0.1
+
+# Database & ORM
+SQLAlchemy[asyncio]>=2.0.36
+greenlet>=3.0.0
+asyncpg>=0.30.0
+psycopg[binary]>=3.2.0
+aiosqlite>=0.20.0
+
+# Authentication & Security
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.1
+email-validator>=2.0.0
+pyjwt>=2.8.0
+
+# Google GenAI / Gemini API
+google-genai>=0.1.1
+
+# Vector Search & Math
+faiss-cpu>=1.9.0
+numpy>=1.26.0
+
+# Document Extractors
+pypdf>=5.1.0
+python-docx>=1.1.2

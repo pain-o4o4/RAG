@@ -1,0 +1,14 @@
+@import '../../styles/variables';
+@import '../../styles/mixins';
+
+.document-manage-page {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+
+    .upload-card {
+        border-radius: $border-radius;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        border: 1px dashed #cbd5e1;
+    }
+}

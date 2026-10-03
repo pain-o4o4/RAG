@@ -1,0 +1,23 @@
+@mixin flex-center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+@mixin flex-between {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+@mixin card-style {
+    background: $card-bg;
+    border-radius: $border-radius;
+    box-shadow: $box-shadow;
+    border: 1px solid $border-color;
+    padding: 1.5rem;
+}
+
+@mixin transition-smooth {
+    transition: all 0.25s ease-in-out;
+}

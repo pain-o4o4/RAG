@@ -2,14 +2,29 @@
 .env
 .env.*
 .env.local
+.env.development.local
+.env.test.local
+.env.production.local
 !.env.example
 
-
-# Virtual Environment
+# Virtual Environments
 .venv/
 venv/
 env/
 ENV/
+FastAPI/.venv/
+
+# Node & Frontend dependencies
+node_modules/
+FE/node_modules/
+/.pnp
+.pnp.js
+coverage/
+build/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Python Cache & Bytecode
 __pycache__/
@@ -20,6 +35,7 @@ __pycache__/
 
 # Storage & Uploads & Vector Store
 storage/
+FastAPI/storage/
 data/
 *.db
 *.sqlite
