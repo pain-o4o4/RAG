@@ -7,7 +7,7 @@ import {
     deleteSession
 } from '../../store/actions/ragActions';
 import { processLogout } from '../../store/actions/userActions';
-import { toggleSidebar } from '../../store/actions';
+import { toggleSidebar, setActiveTab } from '../../store/actions';
 import AuthModal from '../Auth/AuthModal';
 
 class ChatSidebar extends Component {
@@ -37,10 +37,12 @@ class ChatSidebar extends Component {
 
     handleNewChat = () => {
         this.props.dispatchSetActiveSession(null);
+        this.props.dispatchSetActiveTab('chat');
     };
 
     handleSelectSession = (sessionId) => {
         this.props.dispatchSetActiveSession(sessionId);
+        this.props.dispatchSetActiveTab('chat');
     };
 
     handleDeleteSession = (e, sessionId) => {
@@ -56,6 +58,14 @@ class ChatSidebar extends Component {
 
     handleCloseAuthModal = () => {
         this.setState({ isAuthModalOpen: false });
+    };
+
+    handleOpenDocManager = () => {
+        if (!this.props.isLoggedIn) {
+            this.handleOpenAuthModal();
+            return;
+        }
+        this.props.dispatchSetActiveTab('documents');
     };
 
     handleToggleUserMenu = () => {
@@ -134,6 +144,15 @@ class ChatSidebar extends Component {
                                 <button
                                     type="button"
                                     className="strip-btn"
+                                    onClick={this.handleOpenDocManager}
+                                    title="Quản lý tài liệu"
+                                >
+                                    <i className="fas fa-box-archive" />
+                                </button>
+
+                                <button
+                                    type="button"
+                                    className="strip-btn"
                                     onClick={this.handleExpandAndSearch}
                                     title="Lịch sử hội thoại"
                                 >
@@ -197,6 +216,19 @@ class ChatSidebar extends Component {
                                 </button>
                             </div>
 
+                            {/* Document Manager Action */}
+                            <div className="sidebar-action-bar" style={{ marginTop: '10px' }}>
+                                <button
+                                    type="button"
+                                    className="btn-new-chat-main"
+                                    style={{ background: 'rgba(255, 255, 255, 0.05)', color: '#ccc' }}
+                                    onClick={this.handleOpenDocManager}
+                                >
+                                    <i className="fas fa-box-archive me-2" />
+                                    <span>Quản lý tài liệu</span>
+                                </button>
+                            </div>
+
                             {/* Search Box */}
                             {isLoggedIn && (
                                 <div className="sidebar-search-wrapper">
@@ -241,7 +273,7 @@ class ChatSidebar extends Component {
                                                     className={`session-card-item ${isActive ? 'active' : ''}`}
                                                     onClick={() => this.handleSelectSession(session.id)}
                                                 >
-                                                    <i className="far fa-message item-icon" />
+                                                    {/* <i className="far fa-message item-icon" /> */}
                                                     <span className="session-title-text" title={session.title}>
                                                         {session.title || 'Cuộc trò chuyện mới'}
                                                     </span>
@@ -332,6 +364,7 @@ const mapDispatchToProps = (dispatch) => ({
     dispatchCreateNewSession: (title) => dispatch(createNewSession(title)),
     dispatchDeleteSession: (id) => dispatch(deleteSession(id)),
     dispatchToggleSidebar: () => dispatch(toggleSidebar()),
+    dispatchSetActiveTab: (tab) => dispatch(setActiveTab(tab)),
     dispatchLogout: () => dispatch(processLogout())
 });
 

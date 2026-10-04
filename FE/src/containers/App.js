@@ -5,6 +5,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import ChatSidebar from '../components/Sidebar/ChatSidebar';
 import CitationInspector from '../components/Inspector/CitationInspector';
 import ChatWorkspace from './Chat/ChatWorkspace';
+import DocumentManager from '../components/Documents/DocumentManager';
 import { checkBackendHealth } from '../store/actions';
 import { fetchChatSessions } from '../store/actions/ragActions';
 import './App.scss';
@@ -42,6 +43,8 @@ class App extends Component {
             return null;
         }
 
+        const { activeTab, isLoggedIn } = this.props;
+
         return (
             <div className="rag-app-container">
                 <ConfirmModal />
@@ -51,8 +54,16 @@ class App extends Component {
 
                 {/* Main Workspace: Chat & Direct Document Upload */}
                 <main className="rag-main-content">
-                    <ChatWorkspace />
-                    <CitationInspector />
+                    {activeTab === 'documents' ? (
+                        <div className="document-manager-workspace">
+                            <DocumentManager isLoggedIn={isLoggedIn} />
+                        </div>
+                    ) : (
+                        <>
+                            <ChatWorkspace />
+                            <CitationInspector />
+                        </>
+                    )}
                 </main>
 
                 <ToastContainer
@@ -72,9 +83,14 @@ class App extends Component {
     }
 }
 
+const mapStateToProps = (state) => ({
+    activeTab: state.app.activeTab,
+    isLoggedIn: state.user.isLoggedIn
+});
+
 const mapDispatchToProps = (dispatch) => ({
     dispatchCheckHealth: () => dispatch(checkBackendHealth()),
     dispatchFetchSessions: () => dispatch(fetchChatSessions())
 });
 
-export default connect(null, mapDispatchToProps)(App);
+export default connect(mapStateToProps, mapDispatchToProps)(App);

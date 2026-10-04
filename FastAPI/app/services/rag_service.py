@@ -125,12 +125,11 @@ class RAGService:
             "---------------------\n"
             f"{context_text}\n"
             "---------------------\n\n"
-            "HƯỚNG DẪN TRẢ LỜI:\n"
-            "1. Hãy phân tích kỹ câu hỏi và đưa ra câu trả lời **thật chi tiết, sâu sắc và đầy đủ**, dựa vào thông tin từ tài liệu được cung cấp.\n"
-            "2. Nếu tài liệu không đủ ý, bạn **ĐƯỢC PHÉP kết hợp với kiến thức sẵn có** của mình để giải thích thêm, mở rộng vấn đề, hoặc cung cấp bối cảnh sâu sắc hơn. Tuy nhiên, hãy phân biệt rõ đâu là thông tin từ tài liệu, đâu là kiến thức bổ sung của bạn.\n"
-            "3. Khi sử dụng thông tin từ tài liệu, hãy trích dẫn rõ nguồn (tên tài liệu, trang) để tăng độ tin cậy.\n"
-            "4. Về định dạng: Dùng định dạng Markdown chuẩn. Với danh sách liệt kê, hãy dùng ký tự gạch đầu dòng '-' (không dùng ký tự bullet '•' hay '●') và không để dòng trống thừa giữa các mục danh sách để trình bày thật gọn gàng, đẹp mắt.\n"
-            "5. Nếu người dùng yêu cầu phân tích chi tiết hơn hoặc cảm thấy câu trả lời trước đó quá ngắn/sơ sài, hãy đi sâu vào từng khía cạnh kiến trúc, kỹ thuật, dữ liệu, giải pháp công nghệ một cách thấu đáo.\n\n"
+            "HƯỚNG DẪN TRẢ LỜI QUAN TRỌNG (TUÂN THỦ CHẶT CHẼ):\n"
+            "1. Câu trả lời PHẢI dựa trên các thông tin, dữ kiện có trong các đoạn trích từ tài liệu được cung cấp ở trên.\n"
+            "2. XỬ LÝ TRƯỜNG HỢP KHÔNG TÌM THẤY THÔNG TIN: Nếu trong các đoạn trích tài liệu hoàn toàn không có thông tin phù hợp hoặc không đủ căn cứ để trả lời câu hỏi của người dùng, bạn BẮT BUỘC PHẢI THÔNG BÁO RÕ RÀNG: 'Tài liệu được cung cấp không chứa thông tin phù hợp để trả lời câu hỏi này.' Tuyệt đối KHÔNG tự ý suy diễn, phỏng đoán hoặc bịa đặt câu trả lời thiếu căn cứ (chống Hallucination).\n"
+            "3. Khi thông tin có trong tài liệu, hãy trả lời chính xác, chi tiết và trích dẫn rõ nguồn gốc (tên tài liệu, trang) tương ứng với nội dung được nêu.\n"
+            "4. Về định dạng: Dùng định dạng Markdown chuẩn, trình bày mạch lạc, rõ ràng. Với danh sách liệt kê, hãy dùng ký tự gạch đầu dòng '-' và không để dòng trống thừa giữa các mục danh sách.\n\n"
             f"Câu hỏi của người dùng: {query}"
         )
 
