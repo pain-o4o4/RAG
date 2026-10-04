@@ -50,3 +50,5 @@ data/
 
 # Logs
 *.log
+
+RAG_WORKFLOW.md

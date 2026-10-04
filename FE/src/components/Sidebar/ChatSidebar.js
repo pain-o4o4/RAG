@@ -212,20 +212,19 @@ class ChatSidebar extends Component {
                                     onClick={this.handleNewChat}
                                 >
                                     <i className="far fa-edit me-2" />
-                                    <span>Cuộc trò chuyện mới</span>
+                                    <span>Trò chuyện</span>
                                 </button>
                             </div>
 
                             {/* Document Manager Action */}
-                            <div className="sidebar-action-bar" style={{ marginTop: '10px' }}>
+                            <div className="sidebar-action-bar">
                                 <button
                                     type="button"
-                                    className="btn-new-chat-main"
-                                    style={{ background: 'rgba(255, 255, 255, 0.05)', color: '#ccc' }}
+                                    className={`btn-new-chat-main ${this.props.activeTab === 'documents' ? 'active' : ''}`}
                                     onClick={this.handleOpenDocManager}
                                 >
                                     <i className="fas fa-box-archive me-2" />
-                                    <span>Quản lý tài liệu</span>
+                                    <span>Thư viện</span>
                                 </button>
                             </div>
 
@@ -257,7 +256,7 @@ class ChatSidebar extends Component {
                             {/* Sessions History List */}
                             <div className="sidebar-sessions-list">
                                 <div className="sessions-header-label">
-                                    <span>LỊCH SỬ HỘI THOẠI</span>
+                                    <span>Các cuộc trò chuyện</span>
                                     {isLoggedIn && filteredSessions.length > 0 && (
                                         <span className="sessions-count">({filteredSessions.length})</span>
                                     )}
