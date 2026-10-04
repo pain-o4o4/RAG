@@ -1,162 +1,246 @@
 import os
-import json
 import uuid
+import json
 from typing import Optional, Any
 import numpy as np
-import faiss
 
+from langchain_community.vectorstores import FAISS
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_core.documents import Document as LangchainDocument
 from app.core.config import settings
 
 EMBEDDING_DIMENSION = 768
 
 
+class GeminiEmbeddings768(GoogleGenerativeAIEmbeddings):
+    """
+    Embeddings wrapper tùy chỉnh dùng Google Gemini API:
+    - Ép dimensionality về 768 chiều (Matryoshka Representation Learning) để tương thích và tối ưu tốc độ.
+    - Chuẩn hóa L2 vector để tính toán Cosine Similarity qua Inner Product (IndexFlatIP).
+    - Hỗ trợ batching tối đa 50 văn bản/lần gọi để không bị dính rate limit 429.
+    """
+
+    def embed_query(self, text: str) -> list[float]:
+        clean_text = text.strip()
+        if not clean_text:
+            return [0.0] * EMBEDDING_DIMENSION
+
+        try:
+            from google import genai
+            client = genai.Client(api_key=self.google_api_key.get_secret_value())
+            resp = client.models.embed_content(
+                model=self.model,
+                contents=clean_text,
+                config={"output_dimensionality": EMBEDDING_DIMENSION}
+            )
+            vec = np.array(resp.embeddings[0].values, dtype=np.float32)
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            return vec.tolist()
+        except Exception as e:
+            print(f"[GeminiEmbeddings768] Error embedding query: {e}. Fallback to super.")
+            try:
+                return super().embed_query(clean_text)
+            except Exception:
+                return [0.0] * EMBEDDING_DIMENSION
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+
+        try:
+            from google import genai
+            client = genai.Client(api_key=self.google_api_key.get_secret_value())
+            all_vectors = []
+            batch_size = 50
+
+            for i in range(0, len(texts), batch_size):
+                batch = [t.strip() or " " for t in texts[i:i + batch_size]]
+                resp = client.models.embed_content(
+                    model=self.model,
+                    contents=batch,
+                    config={"output_dimensionality": EMBEDDING_DIMENSION}
+                )
+                for emb in resp.embeddings:
+                    vec = np.array(emb.values, dtype=np.float32)
+                    norm = np.linalg.norm(vec)
+                    if norm > 0:
+                        vec = vec / norm
+                    all_vectors.append(vec.tolist())
+
+            return all_vectors
+        except Exception as e:
+            print(f"[GeminiEmbeddings768] Batch error: {e}. Fallback one-by-one.")
+            return [self.embed_query(t) for t in texts]
+
+
 class VectorStore:
     """
-    Quản lý Vector Database sử dụng thư viện FAISS (Facebook AI Similarity Search):
-    - Quản lý tách biệt chỉ mục vector cho từng User ({user_id}.index).
-    - Sử dụng IndexFlatIP (Cosine Similarity trên vector đã chuẩn hóa L2).
-    - Lưu trữ metadata mapping giữa vector_id trong FAISS và bản ghi DocumentChunk trong Database.
+    Quản lý Vector Database sử dụng LangChain FAISS:
+    - Quản lý tách biệt chỉ mục vector theo từng User ({user_id}.faiss và {user_id}.pkl).
+    - Tự động di chuyển dữ liệu từ index cũ (.index, _meta.json) nếu cần.
+    - Tìm kiếm ngữ nghĩa với hỗ trợ lọc document_id / document_ids và ngưỡng similarity_threshold.
     """
 
     def __init__(self, vector_dir: str = settings.VECTOR_STORE_DIR):
         self.vector_dir = vector_dir
         os.makedirs(self.vector_dir, exist_ok=True)
+        try:
+            self.embeddings = GeminiEmbeddings768(
+                model=settings.EMBEDDING_MODEL,
+                google_api_key=settings.GEMINI_API_KEY
+            )
+        except Exception:
+            from langchain_community.embeddings import FakeEmbeddings
+            self.embeddings = FakeEmbeddings(size=EMBEDDING_DIMENSION)
 
-    def _get_index_path(self, user_id: uuid.UUID) -> str:
-        return os.path.join(self.vector_dir, f"{str(user_id)}.index")
+    def _get_index_name(self, user_id: uuid.UUID) -> str:
+        return str(user_id)
 
-    def _get_meta_path(self, user_id: uuid.UUID) -> str:
-        return os.path.join(self.vector_dir, f"{str(user_id)}_meta.json")
+    def _get_faiss_path(self, index_name: str) -> str:
+        return os.path.join(self.vector_dir, f"{index_name}.faiss")
 
-    def _load_index_and_meta(self, user_id: uuid.UUID) -> tuple[faiss.IndexFlatIP, list[dict[str, Any]]]:
-        """Tải hoặc khởi tạo mới index FAISS và file metadata của user."""
-        index_path = self._get_index_path(user_id)
-        meta_path = self._get_meta_path(user_id)
+    def _migrate_old_index_if_needed(self, index_name: str) -> Optional[FAISS]:
+        """Tự động chuyển đổi dữ liệu từ định dạng FAISS cũ (.index + _meta.json) sang LangChain FAISS."""
+        old_index_file = os.path.join(self.vector_dir, f"{index_name}.index")
+        old_meta_file = os.path.join(self.vector_dir, f"{index_name}_meta.json")
 
-        if os.path.exists(index_path) and os.path.exists(meta_path):
-            index = faiss.read_index(index_path)
-            with open(meta_path, "r", encoding="utf-8") as f:
+        if not (os.path.exists(old_index_file) and os.path.exists(old_meta_file)):
+            return None
+
+        try:
+            import faiss
+            from langchain_community.docstore.in_memory import InMemoryDocstore
+
+            print(f"[VectorStore] Auto-migrating old index for user: {index_name}...")
+            index = faiss.read_index(old_index_file)
+            with open(old_meta_file, "r", encoding="utf-8") as f:
                 meta = json.load(f)
-            return index, meta
-        else:
-            index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
-            return index, []
 
-    def _save_index_and_meta(
+            docstore = InMemoryDocstore({})
+            index_to_docstore_id = {}
+
+            for i, m in enumerate(meta):
+                doc_id = str(i)
+                d = LangchainDocument(
+                    page_content=m.get("content", ""),
+                    metadata={
+                        "document_id": str(m.get("document_id", "")),
+                        "chunk_index": m.get("chunk_index", i),
+                        "page_number": m.get("metadata", {}).get("page_number", 1)
+                    }
+                )
+                docstore.add({doc_id: d})
+                index_to_docstore_id[i] = doc_id
+
+            vectorstore = FAISS(
+                embedding_function=self.embeddings,
+                index=index,
+                docstore=docstore,
+                index_to_docstore_id=index_to_docstore_id
+            )
+            vectorstore.save_local(self.vector_dir, index_name=index_name)
+            print(f"[VectorStore] Successfully migrated {len(meta)} chunks to LangChain FAISS!")
+            return vectorstore
+        except Exception as e:
+            print(f"[VectorStore] Migration failed: {e}")
+            return None
+
+    def add_documents(
         self,
         user_id: uuid.UUID,
-        index: faiss.IndexFlatIP,
-        meta: list[dict[str, Any]]
-    ) -> None:
-        """Lưu trữ chỉ mục FAISS và metadata ra ổ đĩa."""
-        index_path = self._get_index_path(user_id)
-        meta_path = self._get_meta_path(user_id)
-
-        faiss.write_index(index, index_path)
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-
-    def add_chunks(
-        self,
-        user_id: uuid.UUID,
-        document_id: uuid.UUID,
-        chunks: list[dict[str, Any]],
-        embeddings: list[list[float]]
+        documents: list[LangchainDocument]
     ) -> list[str]:
-        """
-        Nạp danh sách vector của tài liệu vào chỉ mục FAISS:
-        - Chuẩn hóa L2 vector.
-        - Thêm vector vào FAISS index.
-        - Lưu trữ mapping metadata.
-        - Trả về danh sách vector_id.
-        """
-        if not chunks or not embeddings:
-            return []
+        index_name = self._get_index_name(user_id)
+        faiss_path = self._get_faiss_path(index_name)
 
-        index, meta = self._load_index_and_meta(user_id)
+        if not os.path.exists(faiss_path):
+            # Thử migrate nếu có file cũ
+            self._migrate_old_index_if_needed(index_name)
 
-        # Chuyển đổi thành ma trận numpy float32
-        vec_np = np.array(embeddings, dtype=np.float32)
-        # L2 normalize
-        faiss.normalize_L2(vec_np)
+        if os.path.exists(faiss_path):
+            try:
+                vectorstore = FAISS.load_local(
+                    folder_path=self.vector_dir,
+                    embeddings=self.embeddings,
+                    index_name=index_name,
+                    allow_dangerous_deserialization=True
+                )
+                vector_ids = vectorstore.add_documents(documents)
+                vectorstore.save_local(self.vector_dir, index_name=index_name)
+                return vector_ids
+            except Exception as e:
+                print(f"[VectorStore] Error adding to existing FAISS: {e}")
 
-        # Thêm vào FAISS
-        index.add(vec_np)
-
-        vector_ids = []
-        for i, chunk in enumerate(chunks):
-            v_id = f"vec_{uuid.uuid4().hex[:12]}"
-            vector_ids.append(v_id)
-            meta.append({
-                "vector_id": v_id,
-                "document_id": str(document_id),
-                "chunk_index": chunk.get("chunk_index", i),
-                "content": chunk.get("content", ""),
-                "metadata": chunk.get("metadata", {}),
-            })
-
-        self._save_index_and_meta(user_id, index, meta)
-        return vector_ids
+        # Tạo mới nếu chưa có
+        vectorstore = FAISS.from_documents(documents, self.embeddings)
+        vectorstore.save_local(self.vector_dir, index_name=index_name)
+        return [str(uuid.uuid4()) for _ in documents]
 
     def search(
         self,
         user_id: uuid.UUID,
-        query_embedding: list[float],
+        query: str,
         top_k: int = 4,
         document_id: Optional[uuid.UUID] = None,
         document_ids: Optional[list[uuid.UUID]] = None,
         similarity_threshold: float = settings.SIMILARITY_THRESHOLD
     ) -> list[dict[str, Any]]:
-        """
-        Truy vấn tương đồng ngữ nghĩa trong FAISS:
-        - Lấy top_k kết quả có Cosine Similarity cao nhất.
-        - Lọc theo similarity_threshold để chống Hallucination (bịa đặt thông tin).
-        - Lọc theo document_id hoặc danh sách document_ids (tập hợp tài liệu trong phiên chat).
-        """
-        index_path = self._get_index_path(user_id)
-        if not os.path.exists(index_path):
+        index_name = self._get_index_name(user_id)
+        faiss_path = self._get_faiss_path(index_name)
+
+        vectorstore = None
+        if os.path.exists(faiss_path):
+            try:
+                vectorstore = FAISS.load_local(
+                    folder_path=self.vector_dir,
+                    embeddings=self.embeddings,
+                    index_name=index_name,
+                    allow_dangerous_deserialization=True
+                )
+            except Exception as e:
+                print(f"[VectorStore] Error loading FAISS: {e}")
+
+        if not vectorstore:
+            vectorstore = self._migrate_old_index_if_needed(index_name)
+
+        if not vectorstore:
             return []
 
-        index, meta = self._load_index_and_meta(user_id)
-        if index.ntotal == 0 or not meta:
-            return []
-
-        # Chuẩn hóa vector câu hỏi
-        query_np = np.array([query_embedding], dtype=np.float32)
-        faiss.normalize_L2(query_np)
-
-        # Tìm kiếm trong FAISS
-        search_k = min(len(meta), top_k * 4)  # Lấy dôi ra để lọc theo document_id
-        distances, indices = index.search(query_np, search_k)
-
-        matched_results = []
-        doc_id_str = str(document_id) if document_id else None
-        target_doc_ids: Optional[set[str]] = None
+        target_doc_ids = set()
         if document_ids:
             target_doc_ids = {str(d) for d in document_ids}
-        elif doc_id_str:
-            target_doc_ids = {doc_id_str}
+        elif document_id:
+            target_doc_ids = {str(document_id)}
 
-        for score, idx in zip(distances[0], indices[0]):
-            if idx < 0 or idx >= len(meta):
-                continue
+        def filter_func(meta: dict) -> bool:
+            if not target_doc_ids:
+                return True
+            doc_id_in_meta = str(meta.get("document_id", ""))
+            return doc_id_in_meta in target_doc_ids
 
-            # Kiểm tra ngưỡng tương đồng Cosine Similarity
-            if float(score) < similarity_threshold:
-                continue
+        # Tìm kiếm k lớn hơn để sau đó lọc threshold và doc_ids
+        search_k = min(vectorstore.index.ntotal, max(top_k * 4, 10))
+        results = vectorstore.similarity_search_with_score(
+            query,
+            k=search_k,
+            filter=filter_func if target_doc_ids else None
+        )
 
-            item = meta[idx]
-            # Nếu người dùng chọn chat với danh sách tài liệu cụ thể
-            if target_doc_ids is not None and item.get("document_id") not in target_doc_ids:
+        matched_results = []
+        for doc, score in results:
+            float_score = float(score)
+            # Với IndexFlatIP (Cosine Similarity sau L2 normalize), giá trị score càng cao càng tương đồng
+            if similarity_threshold > 0 and float_score < similarity_threshold:
                 continue
 
             matched_results.append({
-                "vector_id": item.get("vector_id"),
-                "document_id": item.get("document_id"),
-                "chunk_index": item.get("chunk_index"),
-                "content": item.get("content"),
-                "metadata": item.get("metadata"),
-                "score": float(score)
+                "document_id": doc.metadata.get("document_id"),
+                "chunk_index": doc.metadata.get("chunk_index"),
+                "content": doc.page_content,
+                "metadata": doc.metadata,
+                "score": float_score
             })
 
             if len(matched_results) >= top_k:

@@ -10,9 +10,8 @@ from sqlalchemy import select, func
 
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
-from app.services.extractor_service import ExtractorService
-from app.services.chunking_service import ChunkingService
-from app.services.embedding_service import EmbeddingService
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.services.vector_store import VectorStore
 from app.core.config import settings
 from app.core.exceptions import (
@@ -40,54 +39,66 @@ class DocumentService:
 
     async def _process_document_rag(self, doc: Document) -> None:
         """
-        Quy trình ETL RAG tự động cho tài liệu:
-        1. Trích xuất text từ file vật lý (PDF, DOCX, TXT).
-        2. Cắt nhỏ thành các chunks với sliding window.
-        3. Tạo vector embeddings (text-embedding-004 / fallback).
-        4. Nạp vào chỉ mục Vector Database FAISS.
-        5. Lưu thông tin các DocumentChunk vào PostgreSQL.
-        6. Cập nhật Document.status = "COMPLETED" (hoặc "FAILED" nếu có lỗi).
+        Quy trình ETL RAG tự động cho tài liệu bằng LangChain:
+        1. Trích xuất text từ file vật lý (PDF, DOCX, TXT) bằng LangChain DocumentLoaders.
+        2. Cắt nhỏ thành các chunks bằng RecursiveCharacterTextSplitter.
+        3. Tạo vector embeddings và nạp vào Vector Database FAISS.
+        4. Lưu thông tin các DocumentChunk vào PostgreSQL.
+        5. Cập nhật Document.status = "COMPLETED" (hoặc "FAILED" nếu có lỗi).
         """
         try:
             doc.status = "PROCESSING"
             await self.db.commit()
 
-            # 1. Trích xuất text
-            pages = ExtractorService.extract_text(doc.file_path)
+            # 1. & 2. Trích xuất text và phân đoạn (Langchain loaders & text splitter)
+            ext = Path(doc.file_path).suffix.lower()
+            if ext == ".pdf":
+                loader = PyPDFLoader(doc.file_path)
+            elif ext in [".docx", ".doc"]:
+                loader = Docx2txtLoader(doc.file_path)
+            elif ext == ".txt":
+                loader = TextLoader(doc.file_path, autodetect_encoding=True)
+            else:
+                raise ValueError("Unsupported extension")
+                
+            documents = loader.load()
+            
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=settings.CHUNK_SIZE,
+                chunk_overlap=settings.CHUNK_OVERLAP,
+                separators=["\n\n", "\n", ".", "?", "!", " ", ""]
+            )
+            split_docs = text_splitter.split_documents(documents)
+            
+            # Gán thêm metadata để liên kết chunk_index
+            for i, d in enumerate(split_docs):
+                d.metadata["document_id"] = str(doc.id)
+                d.metadata["chunk_index"] = i
+                if "page" in d.metadata:
+                    d.metadata["page_number"] = d.metadata["page"] + 1
 
-            # 2. Phân đoạn text
-            chunks = ChunkingService.chunk_extracted_pages(pages)
-            if not chunks:
-                raise ValueError("Không thể chia nhỏ nội dung văn bản (tài liệu rỗng)")
-
-            # 3. Tạo vector embeddings
-            texts = [c["content"] for c in chunks]
-            embeddings = EmbeddingService.get_embeddings_batch(texts)
-
-            # 4. Nạp vào Vector Database FAISS
+            # 3. Nạp vào Vector Database FAISS (FAISS Wrapper)
             vector_store = VectorStore()
-            vector_ids = vector_store.add_chunks(
+            vector_ids = vector_store.add_documents(
                 user_id=doc.user_id,
-                document_id=doc.id,
-                chunks=chunks,
-                embeddings=embeddings,
+                documents=split_docs
             )
 
-            # 5. Lưu DocumentChunk vào DB
-            for chunk_data, v_id in zip(chunks, vector_ids):
+            # 4. Lưu DocumentChunk vào DB
+            for i, (d, v_id) in enumerate(zip(split_docs, vector_ids)):
                 db_chunk = DocumentChunk(
                     document_id=doc.id,
-                    chunk_index=chunk_data["chunk_index"],
-                    content=chunk_data["content"],
+                    chunk_index=i,
+                    content=d.page_content,
                     vector_id=v_id,
-                    chunk_metadata=chunk_data["metadata"],
-                    token_count=chunk_data["token_count"],
+                    chunk_metadata=d.metadata,
+                    token_count=max(1, len(d.page_content) // 4),
                 )
                 self.db.add(db_chunk)
 
-            # 6. Cập nhật trạng thái hoàn thành
+            # 5. Cập nhật trạng thái hoàn thành
             doc.status = "COMPLETED"
-            doc.chunk_count = len(chunks)
+            doc.chunk_count = len(split_docs)
             doc.error_message = None
             await self.db.commit()
             await self.db.refresh(doc)

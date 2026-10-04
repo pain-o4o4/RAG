@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models.document import Document
-from app.services.embedding_service import EmbeddingService
 from app.services.vector_store import VectorStore
 from app.core.config import settings
 
@@ -49,13 +48,10 @@ class RAGService:
         3. Áp dụng ngưỡng similarity_threshold để loại bỏ kết quả không liên quan.
         4. Truy vấn Database lấy tên tệp tương ứng.
         """
-        # 1. Vector hóa câu hỏi
-        query_vec = EmbeddingService.get_embedding(query)
-
-        # 2. Tìm kiếm trong FAISS
+        # Tìm kiếm trực tiếp trong FAISS (VectorStore tự xử lý text embedding)
         matched = self.vector_store.search(
             user_id=user_id,
-            query_embedding=query_vec,
+            query=query,
             top_k=top_k,
             document_id=document_id,
             document_ids=document_ids,
@@ -109,22 +105,42 @@ class RAGService:
         context_text = "\n\n".join(context_blocks)
         return sources, context_text
 
-    def build_prompt(self, query: str, context_text: str) -> str:
-        """Xây dựng Prompt chặt chẽ theo nguyên tắc RAG chống Hallucination."""
+    def build_prompt(self, query: str, context_text: str, chat_history: Optional[list[dict]] = None) -> str:
+        """Xây dựng Prompt RAG linh hoạt, kết hợp tài liệu và kiến thức sẵn có."""
+        history_text = ""
+        if chat_history:
+            formatted_turns = []
+            for m in chat_history[-4:]:
+                sender = "Người dùng" if m.get("role") == "user" else "Trợ lý AI"
+                content = m.get("content", "").strip()
+                if content:
+                    formatted_turns.append(f"{sender}: {content[:300]}")
+            if formatted_turns:
+                history_text = "LỊCH SỬ TRAO ĐỔI GẦN ĐÂY:\n" + "\n".join(formatted_turns) + "\n\n"
+
         return (
-            "Bạn là trợ lý AI chuyên nghiệp phân tích tài liệu và trả lời câu hỏi (RAG Assistant).\n"
-            "Dưới đây là các đoạn thông tin trích xuất từ tài liệu của người dùng:\n"
+            "Bạn là trợ lý AI chuyên nghiệp hỗ trợ phân tích tài liệu và giải đáp câu hỏi của người dùng một cách chi tiết và sâu sắc.\n"
+            f"{history_text}"
+            "Dưới đây là các thông tin trích xuất từ tài liệu liên quan:\n"
             "---------------------\n"
             f"{context_text}\n"
             "---------------------\n\n"
-            "YÊU CẦU QUAN TRỌNG ĐỐI VỚI CÂU TRẢ LỜI:\n"
-            "1. CHỈ sử dụng các thông tin có trong đoạn trích dẫn ở trên để trả lời. Tuyệt đối không được bịa đặt hay suy đoán thông tin ngoài ngữ cảnh.\n"
-            "2. Khi trích dẫn thông tin, hãy nêu rõ tên tài liệu và số trang (ví dụ: 'Theo tài liệu ABC, trang X...').\n"
-            "3. Nếu nội dung trích dẫn không đủ hoặc không chứa câu trả lời, hãy trả lời thẳng thắn: 'Tài liệu không cung cấp đủ thông tin để trả lời câu hỏi này.'\n\n"
+            "HƯỚNG DẪN TRẢ LỜI:\n"
+            "1. Hãy phân tích kỹ câu hỏi và đưa ra câu trả lời **thật chi tiết, sâu sắc và đầy đủ**, dựa vào thông tin từ tài liệu được cung cấp.\n"
+            "2. Nếu tài liệu không đủ ý, bạn **ĐƯỢC PHÉP kết hợp với kiến thức sẵn có** của mình để giải thích thêm, mở rộng vấn đề, hoặc cung cấp bối cảnh sâu sắc hơn. Tuy nhiên, hãy phân biệt rõ đâu là thông tin từ tài liệu, đâu là kiến thức bổ sung của bạn.\n"
+            "3. Khi sử dụng thông tin từ tài liệu, hãy trích dẫn rõ nguồn (tên tài liệu, trang) để tăng độ tin cậy.\n"
+            "4. Về định dạng: Dùng định dạng Markdown chuẩn. Với danh sách liệt kê, hãy dùng ký tự gạch đầu dòng '-' (không dùng ký tự bullet '•' hay '●') và không để dòng trống thừa giữa các mục danh sách để trình bày thật gọn gàng, đẹp mắt.\n"
+            "5. Nếu người dùng yêu cầu phân tích chi tiết hơn hoặc cảm thấy câu trả lời trước đó quá ngắn/sơ sài, hãy đi sâu vào từng khía cạnh kiến trúc, kỹ thuật, dữ liệu, giải pháp công nghệ một cách thấu đáo.\n\n"
             f"Câu hỏi của người dùng: {query}"
         )
 
-    async def generate_answer(self, query: str, context_text: str, sources: list[dict]) -> RAGResult:
+    async def generate_answer(
+        self,
+        query: str,
+        context_text: str,
+        sources: list[dict],
+        chat_history: Optional[list[dict]] = None
+    ) -> RAGResult:
         """
         Giai đoạn 2: Generation (Sinh phản hồi qua Google Gemini API với cơ chế tự động thử đa mô hình)
         """
@@ -138,7 +154,7 @@ class RAGService:
                 model_name=settings.LLM_MODEL,
             )
 
-        prompt = self.build_prompt(query, context_text)
+        prompt = self.build_prompt(query, context_text, chat_history=chat_history)
         is_real_gemini_key = (
             settings.GEMINI_API_KEY 
             and "your_gemini_api" not in settings.GEMINI_API_KEY.lower()
@@ -156,9 +172,10 @@ class RAGService:
             models_to_try = [
                 settings.LLM_MODEL,
                 "gemini-flash-latest",
-                "gemini-3.7-flash",
-                "gemini-3.5-flash-lite",
                 "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.5-flash",
+                "gemini-flash-lite-latest",
             ]
             seen = set()
             ordered_models = [m for m in models_to_try if not (m in seen or seen.add(m))]
@@ -208,6 +225,7 @@ class RAGService:
         user_id: uuid.UUID,
         document_id: Optional[uuid.UUID] = None,
         document_ids: Optional[list[uuid.UUID]] = None,
+        chat_history: Optional[list[dict]] = None,
     ) -> RAGResult:
         """Hàm chính điều phối toàn bộ quy trình RAG: Retrieval qua FAISS -> Generation qua Gemini."""
         sources, context_text = await self.retrieve_context(
@@ -216,4 +234,24 @@ class RAGService:
             document_id=document_id,
             document_ids=document_ids,
         )
-        return await self.generate_answer(query=query, context_text=context_text, sources=sources)
+
+        # Nếu chưa tìm thấy kết quả và có lịch sử hội thoại, thử kết hợp với câu hỏi trước
+        if (not sources or len(sources) == 0) and chat_history:
+            prev_user_queries = [m["content"] for m in chat_history if m.get("role") == "user"]
+            if prev_user_queries:
+                augmented_query = f"{prev_user_queries[-1]} {query}"
+                aug_sources, aug_context = await self.retrieve_context(
+                    query=augmented_query,
+                    user_id=user_id,
+                    document_id=document_id,
+                    document_ids=document_ids,
+                )
+                if aug_sources:
+                    sources, context_text = aug_sources, aug_context
+
+        return await self.generate_answer(
+            query=query,
+            context_text=context_text,
+            sources=sources,
+            chat_history=chat_history
+        )

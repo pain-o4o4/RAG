@@ -7,7 +7,9 @@ import {
     createChatSessionApi,
     deleteChatSessionApi,
     getChatMessagesApi,
-    sendChatMessageApi
+    sendChatMessageApi,
+    uploadAndChatNewSessionApi,
+    uploadAndChatExistingSessionApi
 } from '../../services/userService';
 import { ToastUtil } from '../../utils/ToastUtil';
 
@@ -16,7 +18,10 @@ import { ToastUtil } from '../../utils/ToastUtil';
 // ==========================================
 
 export const fetchDocuments = (params = {}) => {
-    return async (dispatch) => {
+    return async (dispatch, getState) => {
+        const { isLoggedIn } = getState().user;
+        if (!isLoggedIn) return;
+
         dispatch({ type: actionTypes.FETCH_DOCUMENTS_START });
         try {
             const res = await getDocumentsApi(params);
@@ -83,7 +88,7 @@ export const deleteDocument = (docId) => {
 // ==========================================
 
 export const fetchChatSessions = () => {
-    return async (dispatch, getState) => {
+    return async (dispatch) => {
         dispatch({ type: actionTypes.FETCH_SESSIONS_START });
         try {
             const sessions = await getChatSessionsApi();
@@ -91,12 +96,6 @@ export const fetchChatSessions = () => {
                 type: actionTypes.FETCH_SESSIONS_SUCCESS,
                 sessions: Array.isArray(sessions) ? sessions : []
             });
-
-            // If no active session, automatically select the first one or leave empty
-            const currentActiveId = getState().rag.activeSessionId;
-            if (!currentActiveId && sessions && sessions.length > 0) {
-                dispatch(setActiveSession(sessions[0].id));
-            }
         } catch (e) {
             console.warn('Fetch sessions error:', e.friendlyMessage || e.message);
         }
@@ -111,6 +110,11 @@ export const setActiveSession = (sessionId) => {
         });
         if (sessionId) {
             dispatch(fetchChatMessages(sessionId));
+        } else {
+            dispatch({
+                type: actionTypes.FETCH_MESSAGES_SUCCESS,
+                messages: []
+            });
         }
     };
 };
@@ -120,8 +124,15 @@ export const createNewSession = (title = 'Cuộc trò chuyện mới', docId = n
         try {
             const newSession = await createChatSessionApi(title, docId);
             if (newSession && newSession.id) {
-                await dispatch(fetchChatSessions());
-                dispatch(setActiveSession(newSession.id));
+                dispatch({
+                    type: actionTypes.SET_ACTIVE_SESSION,
+                    sessionId: newSession.id
+                });
+                dispatch({
+                    type: actionTypes.FETCH_MESSAGES_SUCCESS,
+                    messages: []
+                });
+                dispatch(fetchChatSessions());
                 return newSession;
             }
         } catch (e) {
@@ -151,6 +162,14 @@ export const deleteSession = (sessionId) => {
 
 export const fetchChatMessages = (sessionId) => {
     return async (dispatch) => {
+        if (!sessionId) {
+            dispatch({
+                type: actionTypes.FETCH_MESSAGES_SUCCESS,
+                messages: []
+            });
+            return;
+        }
+
         dispatch({ type: actionTypes.FETCH_MESSAGES_START });
         try {
             const messages = await getChatMessagesApi(sessionId);
@@ -164,19 +183,23 @@ export const fetchChatMessages = (sessionId) => {
     };
 };
 
-export const sendMessage = (sessionId, content) => {
-    return async (dispatch) => {
-        if (!content || !content.trim()) return;
+export const sendMessage = (sessionId, content, files = []) => {
+    return async (dispatch, getState) => {
+        const text = (content || '').trim();
+        if (!text && (!files || files.length === 0)) return;
 
-        // Temporary local message for instant optimistic UI
+        let activeId = sessionId;
         const tempId = 'temp-' + Date.now();
+
+        // Optimistic UI user message
+        const displayContent = text || (files.length > 0 ? `Đã đính kèm ${files.length} tài liệu.` : '');
         dispatch({
             type: actionTypes.ADD_USER_MESSAGE,
             message: {
                 id: tempId,
-                session_id: sessionId,
+                session_id: activeId,
                 role: 'user',
-                content: content.trim(),
+                content: displayContent,
                 created_at: new Date().toISOString()
             }
         });
@@ -184,13 +207,57 @@ export const sendMessage = (sessionId, content) => {
         dispatch({ type: actionTypes.SET_IS_SENDING_MESSAGE, isSending: true });
 
         try {
-            const res = await sendChatMessageApi(sessionId, content.trim());
-            if (res && res.assistant_message) {
-                dispatch({
-                    type: actionTypes.ADD_ASSISTANT_MESSAGE,
-                    userMessage: res.user_message,
-                    assistantMessage: res.assistant_message
-                });
+            if (files && files.length > 0) {
+                const formData = new FormData();
+                for (let i = 0; i < files.length; i++) {
+                    formData.append('files', files[i]);
+                }
+                if (text) {
+                    formData.append('content', text);
+                }
+
+                let res = null;
+                if (!activeId) {
+                    const previewTitle = text.length > 25 ? text.substring(0, 25) + '...' : files[0].name;
+                    formData.append('title', previewTitle);
+                    res = await uploadAndChatNewSessionApi(formData);
+                    if (res && res.session) {
+                        activeId = res.session.id;
+                        dispatch({ type: actionTypes.SET_ACTIVE_SESSION, sessionId: activeId });
+                        dispatch(fetchChatSessions());
+                    }
+                } else {
+                    res = await uploadAndChatExistingSessionApi(activeId, formData);
+                }
+
+                if (res && res.assistant_message) {
+                    dispatch({
+                        type: actionTypes.ADD_ASSISTANT_MESSAGE,
+                        userMessage: res.user_message,
+                        assistantMessage: res.assistant_message
+                    });
+                }
+            } else {
+                if (!activeId) {
+                    const previewTitle = text.length > 25 ? text.substring(0, 25) + '...' : text;
+                    const newSession = await createChatSessionApi(previewTitle);
+                    if (newSession && newSession.id) {
+                        activeId = newSession.id;
+                        dispatch({ type: actionTypes.SET_ACTIVE_SESSION, sessionId: activeId });
+                        dispatch(fetchChatSessions());
+                    }
+                }
+
+                if (activeId) {
+                    const res = await sendChatMessageApi(activeId, text);
+                    if (res && res.assistant_message) {
+                        dispatch({
+                            type: actionTypes.ADD_ASSISTANT_MESSAGE,
+                            userMessage: res.user_message,
+                            assistantMessage: res.assistant_message
+                        });
+                    }
+                }
             }
         } catch (e) {
             ToastUtil.error(e.friendlyMessage || 'Lỗi khi nhận câu trả lời từ RAG AI.');
@@ -199,3 +266,4 @@ export const sendMessage = (sessionId, content) => {
         }
     };
 };
+

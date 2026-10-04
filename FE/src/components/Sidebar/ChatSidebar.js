@@ -20,7 +20,15 @@ class ChatSidebar extends Component {
     searchInputRef = React.createRef();
 
     componentDidMount() {
-        this.props.dispatchFetchSessions();
+        if (this.props.isLoggedIn) {
+            this.props.dispatchFetchSessions();
+        }
+    }
+
+    componentDidUpdate(prevProps) {
+        if (!prevProps.isLoggedIn && this.props.isLoggedIn) {
+            this.props.dispatchFetchSessions();
+        }
     }
 
     handleSearchChange = (e) => {
@@ -28,7 +36,7 @@ class ChatSidebar extends Component {
     };
 
     handleNewChat = () => {
-        this.props.dispatchCreateNewSession('Cuộc trò chuyện mới');
+        this.props.dispatchSetActiveSession(null);
     };
 
     handleSelectSession = (sessionId) => {
@@ -135,15 +143,6 @@ class ChatSidebar extends Component {
 
                             {/* Bottom Controls */}
                             <div className="strip-bottom-group">
-                                <button
-                                    type="button"
-                                    className="strip-btn"
-                                    onClick={this.props.dispatchToggleSidebar}
-                                    title="Tiện ích & Cấu hình"
-                                >
-                                    <i className="fas fa-cubes" />
-                                </button>
-
                                 {isLoggedIn && userInfo ? (
                                     <div
                                         className="strip-avatar-btn"
@@ -199,64 +198,73 @@ class ChatSidebar extends Component {
                             </div>
 
                             {/* Search Box */}
-                            <div className="sidebar-search-wrapper">
-                                <div className="search-input-box">
-                                    <i className="fas fa-search search-icon" />
-                                    <input
-                                        ref={this.searchInputRef}
-                                        type="text"
-                                        placeholder="Tìm kiếm lịch sử..."
-                                        value={searchQuery}
-                                        onChange={this.handleSearchChange}
-                                    />
-                                    {searchQuery && (
-                                        <button
-                                            type="button"
-                                            className="btn-clear-search"
-                                            onClick={() => this.setState({ searchQuery: '' })}
-                                        >
-                                            <i className="fas fa-times" />
-                                        </button>
-                                    )}
+                            {isLoggedIn && (
+                                <div className="sidebar-search-wrapper">
+                                    <div className="search-input-box">
+                                        <i className="fas fa-search search-icon" />
+                                        <input
+                                            ref={this.searchInputRef}
+                                            type="text"
+                                            placeholder="Tìm kiếm lịch sử..."
+                                            value={searchQuery}
+                                            onChange={this.handleSearchChange}
+                                        />
+                                        {searchQuery && (
+                                            <button
+                                                type="button"
+                                                className="btn-clear-search"
+                                                onClick={() => this.setState({ searchQuery: '' })}
+                                            >
+                                                <i className="fas fa-times" />
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
-                            </div>
+                            )}
 
                             {/* Sessions History List */}
                             <div className="sidebar-sessions-list">
                                 <div className="sessions-header-label">
                                     <span>LỊCH SỬ HỘI THOẠI</span>
-                                    {filteredSessions.length > 0 && (
+                                    {isLoggedIn && filteredSessions.length > 0 && (
                                         <span className="sessions-count">({filteredSessions.length})</span>
                                     )}
                                 </div>
 
-                                {filteredSessions.length > 0 ? (
-                                    filteredSessions.map((session) => {
-                                        const isActive = session.id === activeSessionId;
-                                        return (
-                                            <div
-                                                key={session.id}
-                                                className={`session-card-item ${isActive ? 'active' : ''}`}
-                                                onClick={() => this.handleSelectSession(session.id)}
-                                            >
-                                                <i className="far fa-message item-icon" />
-                                                <span className="session-title-text" title={session.title}>
-                                                    {session.title || 'Cuộc trò chuyện mới'}
-                                                </span>
-                                                <button
-                                                    type="button"
-                                                    className="btn-delete-session"
-                                                    onClick={(e) => this.handleDeleteSession(e, session.id)}
-                                                    title="Xóa cuộc trò chuyện"
+                                {isLoggedIn ? (
+                                    filteredSessions.length > 0 ? (
+                                        filteredSessions.map((session) => {
+                                            const isActive = session.id === activeSessionId;
+                                            return (
+                                                <div
+                                                    key={session.id}
+                                                    className={`session-card-item ${isActive ? 'active' : ''}`}
+                                                    onClick={() => this.handleSelectSession(session.id)}
                                                 >
-                                                    <i className="far fa-trash-can" />
-                                                </button>
-                                            </div>
-                                        );
-                                    })
+                                                    <i className="far fa-message item-icon" />
+                                                    <span className="session-title-text" title={session.title}>
+                                                        {session.title || 'Cuộc trò chuyện mới'}
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        className="btn-delete-session"
+                                                        onClick={(e) => this.handleDeleteSession(e, session.id)}
+                                                        title="Xóa cuộc trò chuyện"
+                                                    >
+                                                        <i className="far fa-trash-can" />
+                                                    </button>
+                                                </div>
+                                            );
+                                        })
+                                    ) : (
+                                        <div className="empty-history-text">
+                                            {searchQuery ? 'Không tìm thấy kết quả phù hợp' : 'Chưa có lịch sử hội thoại'}
+                                        </div>
+                                    )
                                 ) : (
-                                    <div className="empty-history-text">
-                                        {searchQuery ? 'Không tìm thấy kết quả phù hợp' : 'Chưa có lịch sử hội thoại'}
+                                    <div className="empty-history-text py-4 text-center">
+                                        <i className="fas fa-lock text-muted mb-2 d-block fs-5" />
+                                        <span>Đăng nhập để xem và lưu trữ lịch sử cuộc trò chuyện</span>
                                     </div>
                                 )}
                             </div>

@@ -60,7 +60,8 @@ const ragReducer = (state = initialState, action) => {
         case actionTypes.DELETE_SESSION_SUCCESS:
             return {
                 ...state,
-                sessions: state.sessions.filter((s) => s.id !== action.sessionId)
+                sessions: state.sessions.filter((s) => s.id !== action.sessionId),
+                activeSessionId: state.activeSessionId === action.sessionId ? null : state.activeSessionId
             };
 
         // Chat Messages
@@ -70,6 +71,12 @@ const ragReducer = (state = initialState, action) => {
                 isLoadingMessages: true
             };
         case actionTypes.FETCH_MESSAGES_SUCCESS:
+            if (state.isSendingMessage && (!action.messages || action.messages.length === 0)) {
+                return {
+                    ...state,
+                    isLoadingMessages: false
+                };
+            }
             return {
                 ...state,
                 messages: action.messages,
@@ -81,8 +88,7 @@ const ragReducer = (state = initialState, action) => {
                 messages: [...state.messages, action.message]
             };
         case actionTypes.ADD_ASSISTANT_MESSAGE: {
-            // Replace temporary user message if needed and append assistant message
-            const filtered = state.messages.filter((m) => !m.id.startsWith('temp-'));
+            const filtered = state.messages.filter((m) => !m.id?.startsWith?.('temp-'));
             const updated = action.userMessage ? [...filtered, action.userMessage] : state.messages;
             return {
                 ...state,
@@ -93,6 +99,12 @@ const ragReducer = (state = initialState, action) => {
             return {
                 ...state,
                 isSendingMessage: action.isSending
+            };
+
+        // Reset sessions & messages on logout
+        case actionTypes.PROCESS_LOGOUT:
+            return {
+                ...initialState
             };
 
         default:

@@ -1,6 +1,7 @@
 import React, { Component } from 'react';
 import { connect } from 'react-redux';
-import { userLoginSuccess } from '../../store/actions/userActions';
+import { loginUserThunk, registerUserThunk } from '../../store/actions/userActions';
+import { fetchChatSessions } from '../../store/actions/ragActions';
 import { ToastUtil } from '../../utils/ToastUtil';
 
 class AuthModal extends Component {
@@ -8,7 +9,8 @@ class AuthModal extends Component {
         activeTab: 'login', // 'login' | 'register'
         email: '',
         password: '',
-        userName: ''
+        userName: '',
+        isLoading: false
     };
 
     handleTabSwitch = (tab) => {
@@ -19,9 +21,11 @@ class AuthModal extends Component {
         this.setState({ [field]: value });
     };
 
-    handleSubmit = (e) => {
+    handleSubmit = async (e) => {
         e.preventDefault();
-        const { activeTab, email, password, userName } = this.state;
+        const { activeTab, email, password, userName, isLoading } = this.state;
+
+        if (isLoading) return;
 
         if (!email.trim() || !password.trim()) {
             ToastUtil.warn('Vui lòng nhập đầy đủ Email và Mật khẩu.');
@@ -33,31 +37,37 @@ class AuthModal extends Component {
             return;
         }
 
-        const displayName = userName.trim() || email.split('@')[0] || 'User';
+        this.setState({ isLoading: true });
 
-        const userPayload = {
-            id: Date.now(),
-            email: email.trim(),
-            user_name: displayName
-        };
-
-        this.props.dispatchLoginSuccess(userPayload);
-        ToastUtil.success(activeTab === 'login' ? 'Đăng nhập thành công!' : 'Đăng ký tài khoản thành công!');
-        
-        this.setState({
-            email: '',
-            password: '',
-            userName: ''
-        });
-
-        if (this.props.onClose) {
-            this.props.onClose();
+        if (activeTab === 'login') {
+            await this.props.dispatchLogin(email.trim(), password.trim(), () => {
+                this.setState({
+                    email: '',
+                    password: '',
+                    userName: '',
+                    isLoading: false
+                });
+                this.props.dispatchFetchSessions();
+                if (this.props.onClose) {
+                    this.props.onClose();
+                }
+            });
+            this.setState({ isLoading: false });
+        } else {
+            await this.props.dispatchRegister(userName.trim(), email.trim(), password.trim(), () => {
+                this.setState({
+                    activeTab: 'login',
+                    password: '',
+                    isLoading: false
+                });
+            });
+            this.setState({ isLoading: false });
         }
     };
 
     render() {
         const { isOpen, onClose } = this.props;
-        const { activeTab, email, password, userName } = this.state;
+        const { activeTab, email, password, userName, isLoading } = this.state;
 
         if (!isOpen) return null;
 
@@ -70,6 +80,7 @@ class AuthModal extends Component {
                                 type="button"
                                 className={`auth-tab-btn ${activeTab === 'login' ? 'active' : ''}`}
                                 onClick={() => this.handleTabSwitch('login')}
+                                disabled={isLoading}
                             >
                                 Đăng Nhập
                             </button>
@@ -77,12 +88,13 @@ class AuthModal extends Component {
                                 type="button"
                                 className={`auth-tab-btn ${activeTab === 'register' ? 'active' : ''}`}
                                 onClick={() => this.handleTabSwitch('register')}
+                                disabled={isLoading}
                             >
                                 Đăng Ký
                             </button>
                         </div>
 
-                        <button type="button" className="btn-close-auth" onClick={onClose}>
+                        <button type="button" className="btn-close-auth" onClick={onClose} disabled={isLoading}>
                             <i className="fas fa-times" />
                         </button>
                     </div>
@@ -98,6 +110,7 @@ class AuthModal extends Component {
                                     value={userName}
                                     onChange={(e) => this.handleInputChange('userName', e.target.value)}
                                     required={activeTab === 'register'}
+                                    disabled={isLoading}
                                 />
                             </div>
                         )}
@@ -111,6 +124,7 @@ class AuthModal extends Component {
                                 value={email}
                                 onChange={(e) => this.handleInputChange('email', e.target.value)}
                                 required
+                                disabled={isLoading}
                             />
                         </div>
 
@@ -123,11 +137,16 @@ class AuthModal extends Component {
                                 value={password}
                                 onChange={(e) => this.handleInputChange('password', e.target.value)}
                                 required
+                                disabled={isLoading}
                             />
                         </div>
 
-                        <button type="submit" className="btn btn-auth-submit w-100">
-                            {activeTab === 'login' ? 'Đăng Nhập' : 'Tạo Tài Khoản'}
+                        <button type="submit" className="btn btn-auth-submit w-100" disabled={isLoading}>
+                            {isLoading ? (
+                                <span><i className="fas fa-spinner fa-spin me-2" /> Đang xử lý...</span>
+                            ) : (
+                                activeTab === 'login' ? 'Đăng Nhập' : 'Tạo Tài Khoản'
+                            )}
                         </button>
                     </form>
                 </div>
@@ -137,7 +156,9 @@ class AuthModal extends Component {
 }
 
 const mapDispatchToProps = (dispatch) => ({
-    dispatchLoginSuccess: (userInfo) => dispatch(userLoginSuccess(userInfo))
+    dispatchLogin: (email, password, onSuccess) => dispatch(loginUserThunk(email, password, onSuccess)),
+    dispatchRegister: (userName, email, password, onSuccess) => dispatch(registerUserThunk(userName, email, password, onSuccess)),
+    dispatchFetchSessions: () => dispatch(fetchChatSessions())
 });
 
 export default connect(null, mapDispatchToProps)(AuthModal);

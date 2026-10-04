@@ -8,6 +8,59 @@ import {
 } from '../../store/actions/ragActions';
 import { setInspectorSource } from '../../store/actions';
 import { ToastUtil } from '../../utils/ToastUtil';
+import MarkdownIt from 'markdown-it';
+
+const mdParser = new MarkdownIt({ breaks: true, linkify: true });
+
+const renderMarkdownContent = (content) => {
+    if (!content) return '';
+
+    // Normalize markdown content:
+    // 1. Convert unicode bullets (•, ●, ○) to standard markdown list syntax '- '
+    // 2. Collapse blank lines between consecutive list items so it renders as a tight list (no <p> inside <li>)
+    const lines = content.split('\n');
+    const processed = [];
+
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+        const trimmed = line.trim();
+        const isBullet = /^[•●○]\s*/.test(trimmed);
+        if (isBullet) {
+            line = line.replace(/^[ \t]*[•●○]\s*/, '- ');
+        }
+
+        if (trimmed === '') {
+            let nextNonEmpty = '';
+            for (let j = i + 1; j < lines.length; j++) {
+                if (lines[j].trim() !== '') {
+                    nextNonEmpty = lines[j].trim();
+                    break;
+                }
+            }
+            const nextIsListItem = /^[•●○]\s*/.test(nextNonEmpty) || /^[-*+]\s+/.test(nextNonEmpty) || /^\d+\.\s+/.test(nextNonEmpty);
+
+            let prevNonEmpty = '';
+            for (let k = processed.length - 1; k >= 0; k--) {
+                if (processed[k].trim() !== '') {
+                    prevNonEmpty = processed[k].trim();
+                    break;
+                }
+            }
+            const prevIsListItem = /^[-*+]\s+/.test(prevNonEmpty) || /^\d+\.\s+/.test(prevNonEmpty) || /^[•●○]\s*/.test(prevNonEmpty);
+
+            if (prevIsListItem && nextIsListItem) {
+                continue; // Skip the blank line to keep list items compact!
+            }
+        }
+
+        processed.push(line);
+    }
+
+    let html = mdParser.render(processed.join('\n'));
+    // Strip loose <p> tags inside <li> to prevent Bootstrap paragraph spacing
+    html = html.replace(/<li>\s*<p>([\s\S]*?)<\/p>\s*<\/li>/gi, '<li>$1</li>');
+    return html;
+};
 
 class ChatWorkspace extends Component {
     state = {
@@ -32,7 +85,9 @@ class ChatWorkspace extends Component {
 
     componentDidUpdate(prevProps) {
         if (prevProps.activeSessionId !== this.props.activeSessionId && this.props.activeSessionId) {
-            this.props.dispatchFetchMessages(this.props.activeSessionId);
+            if (!this.props.isSendingMessage) {
+                this.props.dispatchFetchMessages(this.props.activeSessionId);
+            }
         }
         if (prevProps.messages?.length !== this.props.messages?.length || this.props.isSendingMessage) {
             this.scrollToBottom();
@@ -151,11 +206,11 @@ class ChatWorkspace extends Component {
 
     handleSend = async () => {
         const { inputValue, attachedFiles } = this.state;
-        let { activeSessionId } = this.props;
+        const { activeSessionId } = this.props;
 
         if (!inputValue.trim() && attachedFiles.length === 0) return;
 
-        const messageText = inputValue.trim() || 'Hãy tóm tắt và phân tích các tài liệu tôi đính kèm.';
+        const messageText = inputValue.trim();
         const filesToUpload = [...attachedFiles];
 
         // Clear input and files immediately for smooth UX
@@ -164,25 +219,8 @@ class ChatWorkspace extends Component {
             attachedFiles: []
         });
 
-        // Ensure an active session exists
-        if (!activeSessionId) {
-            const previewTitle = messageText.length > 25 ? messageText.substring(0, 25) + '...' : messageText;
-            const newSession = await this.props.dispatchCreateNewSession(previewTitle);
-            if (newSession && newSession.id) {
-                activeSessionId = newSession.id;
-            } else {
-                ToastUtil.error('Không thể tạo phiên trò chuyện.');
-                return;
-            }
-        }
-
-        // Upload attached files if any
-        if (filesToUpload.length > 0) {
-            await this.props.dispatchUploadDocuments(filesToUpload);
-        }
-
-        // Send message to RAG session
-        await this.props.dispatchSendMessage(activeSessionId, messageText);
+        // Send message with attached files directly in one unified request
+        await this.props.dispatchSendMessage(activeSessionId, messageText, filesToUpload);
     };
 
     renderInputCard = () => {
@@ -270,9 +308,10 @@ class ChatWorkspace extends Component {
     };
 
     render() {
-        const { messages, isSendingMessage, isUploading } = this.props;
+        const { messages, activeSessionId, isLoadingMessages, isSendingMessage, isUploading } = this.props;
         const { isDragging } = this.state;
         const hasMessages = messages && messages.length > 0;
+        const showStream = Boolean(activeSessionId || hasMessages || isSendingMessage || isUploading);
 
         const quickPrompts = [
             {
@@ -316,11 +355,15 @@ class ChatWorkspace extends Component {
                 )}
 
                 {/* Empty State: Center Hero Screen */}
-                {!hasMessages ? (
+                {!showStream ? (
                     <div className="chat-hero-screen">
                         <div className="hero-content-box">
                             <div className="hero-icon-badge">
-                                <i className="fas fa-sparkles" />
+                                <img
+                                    src={`${process.env.PUBLIC_URL}/robot.png`}
+                                    alt="Robot AI Assistant"
+                                    className="hero-robot-img"
+                                />
                             </div>
                             <h1 className="hero-main-title">Tôi có thể giúp gì cho bạn hôm nay?</h1>
                             <p className="hero-sub-title">
@@ -340,7 +383,7 @@ class ChatWorkspace extends Component {
                                         onClick={() => this.handleQuickPrompt(item.prompt)}
                                     >
                                         <div className="prompt-card-icon">
-                                            <i className={`fas ${item.icon}`} />
+                                             <i className={`fas ${item.icon}`} />
                                         </div>
                                         <div className="prompt-card-text">
                                             <div className="title">{item.title}</div>
@@ -355,6 +398,19 @@ class ChatWorkspace extends Component {
                     /* Active Conversation Message Stream */
                     <div className="chat-stream-container">
                         <div className="stream-message-column">
+                            {isLoadingMessages && !hasMessages && (
+                                <div className="chat-status-notice">
+                                    <i className="fas fa-spinner fa-spin me-2 text-info" />
+                                    <span>Đang tải lịch sử tin nhắn...</span>
+                                </div>
+                            )}
+
+                            {!isLoadingMessages && !hasMessages && !isSendingMessage && !isUploading && (
+                                <div className="chat-status-notice text-muted">
+                                    <i className="far fa-message me-2" />
+                                    <span>Phiên trò chuyện này chưa có câu hỏi. Nhập câu hỏi bên dưới để bắt đầu.</span>
+                                </div>
+                            )}
                             {messages.map((msg, index) => {
                                 const isUser = msg.role === 'user';
                                 const sources = msg.sources || msg.citations || [];
@@ -364,16 +420,11 @@ class ChatWorkspace extends Component {
                                         key={msg.id || index}
                                         className={`chat-row-item ${isUser ? 'user-align' : 'assistant-align'}`}
                                     >
-                                        {!isUser && (
-                                            <div className="assistant-avatar-pill">
-                                                <i className="fas fa-sparkles" />
-                                            </div>
-                                        )}
-
                                         <div className="message-bubble-box">
-                                            <div className="message-text-content">
-                                                {msg.content}
-                                            </div>
+                                            <div 
+                                                className="message-text-content" 
+                                                dangerouslySetInnerHTML={{ __html: renderMarkdownContent(msg.content || '') }} 
+                                            />
 
                                             {/* Citation Sources */}
                                             {sources.length > 0 && (
@@ -415,9 +466,6 @@ class ChatWorkspace extends Component {
                             {/* Thinking & Retrieval Indicator */}
                             {(isSendingMessage || isUploading) && (
                                 <div className="chat-row-item assistant-align">
-                                    <div className="assistant-avatar-pill">
-                                        <i className="fas fa-sparkles" />
-                                    </div>
                                     <div className="thinking-bubble-box">
                                         <div className="pulse-dots-loader">
                                             <span />
@@ -452,13 +500,14 @@ class ChatWorkspace extends Component {
 const mapStateToProps = (state) => ({
     activeSessionId: state.rag.activeSessionId,
     messages: state.rag.messages,
+    isLoadingMessages: state.rag.isLoadingMessages,
     isSendingMessage: state.rag.isSendingMessage,
     isUploading: state.rag.isUploading
 });
 
 const mapDispatchToProps = (dispatch) => ({
     dispatchFetchMessages: (id) => dispatch(fetchChatMessages(id)),
-    dispatchSendMessage: (id, content) => dispatch(sendMessage(id, content)),
+    dispatchSendMessage: (id, content, files) => dispatch(sendMessage(id, content, files)),
     dispatchCreateNewSession: (title) => dispatch(createNewSession(title)),
     dispatchUploadDocuments: (files) => dispatch(uploadDocumentsBatch(files)),
     dispatchSetInspectorSource: (src) => dispatch(setInspectorSource(src))

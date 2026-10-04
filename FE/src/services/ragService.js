@@ -65,30 +65,15 @@ export const sendChatMessageApi = (sessionId, content) => {
     return axios.post(`/api/v1/chat/sessions/${sessionId}/messages`, { content });
 };
 
-// ==========================================
-// 3. SYSTEM HEALTH CHECK & AUTH STUBS
-// ==========================================
-
-export const getHealthCheckApi = () => {
-    return axios.get('/health');
-};
-
-export const handleLoginApi = (email, password) => {
-    return Promise.resolve({
-        user: { id: 1, email: email || 'admin@rag.local', user_name: 'Admin' },
-        message: 'Đăng nhập thành công'
+export const uploadAndChatNewSessionApi = (formData) => {
+    return axios.post('/api/v1/chat/sessions/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
     });
 };
 
-export const handleRegisterApi = (user_name, email, password) => {
-    return Promise.resolve({
-        id: 1,
-        user_name,
-        email,
-        message: 'Đăng ký thành công'
+export const uploadAndChatExistingSessionApi = (sessionId, formData) => {
+    return axios.post(`/api/v1/chat/sessions/${sessionId}/upload`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
     });
 };
 
-export const handleLogoutApi = () => {
-    return Promise.resolve({ message: 'Đã đăng xuất' });
-};

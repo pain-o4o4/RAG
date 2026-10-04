@@ -198,12 +198,19 @@ class ChatService:
             doc_ids.append(session.document_id)
 
         # 4. Kích hoạt RAG Service riêng biệt
+        recent_messages = await self.get_session_messages(session_id, user_id)
+        chat_history = [
+            {"role": m.role, "content": m.content}
+            for m in recent_messages if m.id != user_msg.id
+        ][-6:]
+
         rag_service = RAGService(self.db)
         rag_result = await rag_service.query(
             query=clean_content,
             user_id=user_id,
             document_ids=doc_ids if doc_ids else None,
-            document_id=session.document_id if not doc_ids else None
+            document_id=session.document_id if not doc_ids else None,
+            chat_history=chat_history
         )
 
         # 5. Lưu tin nhắn phản hồi của Assistant
@@ -352,11 +359,18 @@ class ChatService:
             )
             self.db.add(user_msg)
 
+            recent_messages = await self.get_session_messages(session.id, user_id)
+            chat_history = [
+                {"role": m.role, "content": m.content}
+                for m in recent_messages if m.id != user_msg.id
+            ][-6:]
+
             rag_service = RAGService(self.db)
             rag_result = await rag_service.query(
                 query=clean_content,
                 user_id=user_id,
-                document_ids=all_doc_ids if all_doc_ids else None
+                document_ids=all_doc_ids if all_doc_ids else None,
+                chat_history=chat_history
             )
 
             assistant_msg = ChatMessage(
