@@ -23,12 +23,6 @@ async def register(
     payload: RegisterRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Tiếp nhận yêu cầu đăng ký từ Client:
-    - 1. Nhận dữ liệu đầu vào đã qua validate tự động bởi Pydantic.
-    - 2. Điều hướng sang AuthService để xử lý nghiệp vụ băm pass và lưu DB.
-    - 3. Trả về kết quả UserResponse (HTTP 201 Created).
-    """
     auth_service = AuthService(db)
     user = await auth_service.register(payload)
     return user

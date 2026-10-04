@@ -3,9 +3,9 @@ from typing import Optional
 from uuid import UUID
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from app.core.database import get_db
+from app.core.repository import BaseRepository
 from app.models.user import User
 
 
@@ -23,26 +23,22 @@ async def get_current_user(
     - Nếu chưa có hoặc X-User-Id không hợp lệ: Tự động fallback về tài khoản hoạt động trong DB
       để trải nghiệm giao diện Frontend và Swagger UI hoạt động liền mạch không bị chặn 401.
     """
+    user_repo = BaseRepository(db, User)
     user = None
     if x_user_id and str(x_user_id).strip().lower() not in {"null", "undefined", "none", ""}:
         try:
             user_uuid = UUID(str(x_user_id).strip())
-            query = select(User).where(User.id == user_uuid, User.is_deleted == False)
-            result = await db.execute(query)
-            user = result.scalars().first()
+            user = await user_repo.find_one(id=user_uuid, is_deleted=False)
         except (ValueError, TypeError):
             user = None
 
     if not user:
         # Fallback về user đang hoạt động gần nhất trong DB
-        fallback_query = (
-            select(User)
-            .where(User.is_deleted == False, User.is_active == True)
-            .order_by(User.created_at.desc())
+        user = await user_repo.find_one(
+            is_deleted=False, 
+            is_active=True,
+            order_by=User.created_at.desc()
         )
-        res = await db.execute(fallback_query)
-        user = res.scalars().first()
-
 
     if not user:
         raise HTTPException(

@@ -16,7 +16,7 @@ export const handleLogout = () => {
 
 const instance = axios.create({
     baseURL: backendUrl,
-    timeout: 60000
+    timeout: 300000
 });
 
 // Request interceptor: attach X-User-Id header for authenticated requests

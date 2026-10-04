@@ -10,6 +10,7 @@ from sqlalchemy import select, func
 
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
+from app.core.repository import BaseRepository
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.services.vector_store import VectorStore
@@ -36,6 +37,8 @@ class DocumentService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        self.doc_repo = BaseRepository(db, Document)
+        self.chunk_repo = BaseRepository(db, DocumentChunk)
 
     async def _process_document_rag(self, doc: Document) -> None:
         """
@@ -139,13 +142,11 @@ class DocumentService:
         file_hash = hashlib.sha256(content).hexdigest()
 
         # Kiểm tra file đã tồn tại với user này chưa
-        query = select(Document).where(
-            Document.user_id == user_id,
-            Document.file_hash == file_hash,
-            Document.is_deleted == False
+        existing_doc = await self.doc_repo.find_one(
+            user_id=user_id,
+            file_hash=file_hash,
+            is_deleted=False
         )
-        result = await self.db.execute(query)
-        existing_doc = result.scalars().first()
         if existing_doc:
             raise DocumentAlreadyExistsException(
                 f"Tài liệu '{file.filename}' đã tồn tại trong danh sách của bạn"
@@ -345,17 +346,13 @@ class DocumentService:
         Nghiệp vụ lấy chi tiết 1 tài liệu:
         - Đảm bảo tài liệu tồn tại, chưa bị xóa và thuộc quyền sở hữu của user.
         """
-        query = select(Document).where(
-            Document.id == doc_id,
-            Document.user_id == user_id,
-            Document.is_deleted == False
+        doc = await self.doc_repo.find_one(
+            id=doc_id,
+            user_id=user_id,
+            is_deleted=False
         )
-        result = await self.db.execute(query)
-        doc = result.scalars().first()
-
         if not doc:
             raise DocumentNotFoundException("Tài liệu không tồn tại hoặc bạn không có quyền truy cập")
-
         return doc
 
     async def delete_document(self, doc_id: uuid.UUID, user_id: uuid.UUID) -> Document:
@@ -364,8 +361,5 @@ class DocumentService:
         - Đánh dấu is_deleted = True và cập nhật deleted_at = now().
         """
         doc = await self.get_document_by_id(doc_id, user_id)
-        doc.is_deleted = True
-        doc.deleted_at = datetime.now()
-
-        await self.db.commit()
+        await self.doc_repo.delete(doc.id, soft=True)
         return doc

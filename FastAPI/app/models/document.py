@@ -93,6 +93,7 @@ class Document(Base):
         "ChatSession",
         secondary="session_documents",
         back_populates="documents",
-        lazy="selectin"
+        lazy="selectin",
+        viewonly=True
     )
     

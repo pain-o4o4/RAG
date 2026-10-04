@@ -2,7 +2,6 @@ import uuid
 from typing import Optional
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models.chat_session import ChatSession
@@ -10,6 +9,7 @@ from app.models.chat_message import ChatMessage
 from app.models.document import Document
 from app.models.session_document import session_documents
 from app.services.rag_service import RAGService
+from app.core.repository import BaseRepository
 from app.core.exceptions import (
     ChatSessionNotFoundException,
     EmptyMessageException,
@@ -19,7 +19,7 @@ from app.core.exceptions import (
 class ChatService:
     """
     Tầng Service quản lý phiên trò chuyện và tương tác RAG:
-    - Quản lý vòng đời ChatSession (Tạo, xem danh sách, cập nhật tên, xóa mềm).
+    - Quản lý vòng đời ChatSession (Tạo, xem danh sách, cập nhật tên, xóa mềm) qua BaseRepository.
     - Quản lý liên kết nhiều tài liệu với từng ChatSession (session_documents).
     - Tải lịch sử tin nhắn ChatMessage.
     - Tương tác RAG: Truy xuất ngữ cảnh từ tất cả tài liệu trong phiên chat và sinh câu trả lời qua Google Gemini.
@@ -27,30 +27,28 @@ class ChatService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        self.session_repo = BaseRepository(db, ChatSession)
+        self.msg_repo = BaseRepository(db, ChatMessage)
+        self.doc_repo = BaseRepository(db, Document)
 
     async def get_session_documents(self, session_id: uuid.UUID) -> list[Document]:
         """Lấy danh sách các tài liệu liên kết với một phiên chat."""
-        query = (
-            select(Document)
-            .join(session_documents, Document.id == session_documents.c.document_id)
-            .where(
-                session_documents.c.session_id == session_id,
-                Document.is_deleted == False
-            )
-            .order_by(session_documents.c.created_at.asc())
-        )
-        res = await self.db.execute(query)
-        return list(res.scalars().all())
+        session = await self.session_repo.find_by_id(session_id, include=[ChatSession.documents])
+        if not session:
+            return []
+        return [d for d in session.documents if not d.is_deleted]
 
     async def link_documents_to_session(self, session_id: uuid.UUID, doc_ids: list[uuid.UUID]) -> None:
         """Gắn danh sách document_ids vào bảng liên kết session_documents."""
-        for d_id in doc_ids:
+        unique_ids = list(dict.fromkeys(doc_ids))
+        for d_id in unique_ids:
             stmt = (
                 insert(session_documents)
                 .values(session_id=session_id, document_id=d_id)
                 .on_conflict_do_nothing()
             )
             await self.db.execute(stmt)
+        await self.db.flush()
 
     async def create_session(
         self,
@@ -60,13 +58,11 @@ class ChatService:
         document_ids: Optional[list[uuid.UUID]] = None,
     ) -> ChatSession:
         """Tạo một phiên hội thoại mới cho User."""
-        session = ChatSession(
+        session = await self.session_repo.create(
             title=title or "Cuộc trò chuyện mới",
             user_id=user_id,
             document_id=document_id,
         )
-        self.db.add(session)
-        await self.db.flush()
 
         all_doc_ids = []
         if document_id:
@@ -77,25 +73,19 @@ class ChatService:
         if all_doc_ids:
             await self.link_documents_to_session(session.id, all_doc_ids)
 
-        await self.db.commit()
-        await self.db.refresh(session)
         session.documents = await self.get_session_documents(session.id)
         return session
 
     async def get_sessions(self, user_id: uuid.UUID) -> list[ChatSession]:
         """Lấy danh sách các phiên chat của User (chưa bị xóa mềm)."""
-        query = (
-            select(ChatSession)
-            .where(
-                ChatSession.user_id == user_id,
-                ChatSession.is_deleted == False
-            )
-            .order_by(ChatSession.updated_at.desc())
+        sessions = await self.session_repo.find_many(
+            user_id=user_id,
+            is_deleted=False,
+            include=[ChatSession.documents],
+            order_by=ChatSession.updated_at.desc()
         )
-        result = await self.db.execute(query)
-        sessions = list(result.scalars().all())
         for s in sessions:
-            s.documents = await self.get_session_documents(s.id)
+            s.documents = [d for d in s.documents if not d.is_deleted]
         return sessions
 
     async def get_session_by_id(
@@ -104,16 +94,15 @@ class ChatService:
         user_id: uuid.UUID
     ) -> ChatSession:
         """Lấy thông tin chi tiết một phiên chat, kiểm tra quyền sở hữu."""
-        query = select(ChatSession).where(
-            ChatSession.id == session_id,
-            ChatSession.user_id == user_id,
-            ChatSession.is_deleted == False
+        session = await self.session_repo.find_one(
+            id=session_id,
+            user_id=user_id,
+            is_deleted=False,
+            include=[ChatSession.documents]
         )
-        result = await self.db.execute(query)
-        session = result.scalars().first()
         if not session:
             raise ChatSessionNotFoundException("Phiên trò chuyện không tồn tại hoặc bạn không có quyền truy cập")
-        session.documents = await self.get_session_documents(session.id)
+        session.documents = [d for d in session.documents if not d.is_deleted]
         return session
 
     async def update_session_title(
@@ -124,9 +113,7 @@ class ChatService:
     ) -> ChatSession:
         """Đổi tên tiêu đề của phiên chat."""
         session = await self.get_session_by_id(session_id, user_id)
-        session.title = title.strip()
-        await self.db.commit()
-        await self.db.refresh(session)
+        session = await self.session_repo.update(session.id, title=title.strip())
         session.documents = await self.get_session_documents(session.id)
         return session
 
@@ -137,9 +124,7 @@ class ChatService:
     ) -> ChatSession:
         """Xóa mềm phiên chat."""
         session = await self.get_session_by_id(session_id, user_id)
-        session.is_deleted = True
-        session.deleted_at = datetime.now()
-        await self.db.commit()
+        await self.session_repo.delete(session.id, soft=True)
         return session
 
     async def get_session_messages(
@@ -149,17 +134,11 @@ class ChatService:
     ) -> list[ChatMessage]:
         """Tải toàn bộ lịch sử tin nhắn trong phiên chat (sắp xếp tăng dần theo thời gian)."""
         await self.get_session_by_id(session_id, user_id)
-
-        query = (
-            select(ChatMessage)
-            .where(
-                ChatMessage.session_id == session_id,
-                ChatMessage.is_deleted == False
-            )
-            .order_by(ChatMessage.created_at.asc())
+        return await self.msg_repo.find_many(
+            session_id=session_id,
+            is_deleted=False,
+            order_by=ChatMessage.created_at.asc()
         )
-        result = await self.db.execute(query)
-        return list(result.scalars().all())
 
     async def send_message(
         self,

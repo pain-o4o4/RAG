@@ -61,7 +61,8 @@ class ChatSession(Base):
         "Document",
         secondary=session_documents,
         back_populates="sessions",
-        lazy="selectin"
+        lazy="selectin",
+        viewonly=True
     )
     chat_messages = relationship(
         "ChatMessage",
