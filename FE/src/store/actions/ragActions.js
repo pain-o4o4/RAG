@@ -191,15 +191,23 @@ export const sendMessage = (sessionId, content, files = []) => {
         let activeId = sessionId;
         const tempId = 'temp-' + Date.now();
 
-        // Optimistic UI user message
-        const displayContent = text || (files.length > 0 ? `Đã đính kèm ${files.length} tài liệu.` : '');
+        // Convert attached File objects to serializable attachment objects
+        const displayFiles = files && files.length > 0 ? files.map(f => ({
+            filename: f.name || f.filename,
+            file_size: f.size || f.file_size,
+            file_type: '.' + (f.name || f.filename || '').split('.').pop().toLowerCase()
+        })) : [];
+
+        // Optimistic UI user message with attached document pills
         dispatch({
             type: actionTypes.ADD_USER_MESSAGE,
             message: {
                 id: tempId,
                 session_id: activeId,
                 role: 'user',
-                content: displayContent,
+                content: text,
+                files: displayFiles,
+                sources: displayFiles,
                 created_at: new Date().toISOString()
             }
         });
@@ -231,9 +239,19 @@ export const sendMessage = (sessionId, content, files = []) => {
                 }
 
                 if (res && res.assistant_message) {
+                    const userMsgWithFiles = res.user_message ? {
+                        ...res.user_message,
+                        files: (res.user_message.sources && res.user_message.sources.length > 0)
+                            ? res.user_message.sources
+                            : (res.uploaded_documents || res.newly_uploaded || displayFiles),
+                        sources: (res.user_message.sources && res.user_message.sources.length > 0)
+                            ? res.user_message.sources
+                            : (res.uploaded_documents || res.newly_uploaded || displayFiles)
+                    } : null;
+
                     dispatch({
                         type: actionTypes.ADD_ASSISTANT_MESSAGE,
-                        userMessage: res.user_message,
+                        userMessage: userMsgWithFiles,
                         assistantMessage: res.assistant_message
                     });
                 }

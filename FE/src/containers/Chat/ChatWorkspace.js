@@ -66,12 +66,14 @@ class ChatWorkspace extends Component {
     state = {
         inputValue: '',
         attachedFiles: [],
-        isDragging: false
+        isDragging: false,
+        thinkingSeconds: 0
     };
 
     messagesEndRef = React.createRef();
     inputRef = React.createRef();
     fileInputRef = React.createRef();
+    thinkingInterval = null;
 
     componentDidMount() {
         const { activeSessionId } = this.props;
@@ -91,6 +93,28 @@ class ChatWorkspace extends Component {
         }
         if (prevProps.messages?.length !== this.props.messages?.length || this.props.isSendingMessage) {
             this.scrollToBottom();
+        }
+
+        const isNowBusy = this.props.isSendingMessage || this.props.isUploading;
+        const wasBusy = prevProps.isSendingMessage || prevProps.isUploading;
+
+        if (isNowBusy && !wasBusy) {
+            this.setState({ thinkingSeconds: 0 });
+            if (this.thinkingInterval) clearInterval(this.thinkingInterval);
+            this.thinkingInterval = setInterval(() => {
+                this.setState((prev) => ({ thinkingSeconds: prev.thinkingSeconds + 1 }));
+            }, 1000);
+        } else if (!isNowBusy && wasBusy) {
+            if (this.thinkingInterval) {
+                clearInterval(this.thinkingInterval);
+                this.thinkingInterval = null;
+            }
+        }
+    }
+
+    componentWillUnmount() {
+        if (this.thinkingInterval) {
+            clearInterval(this.thinkingInterval);
         }
     }
 
@@ -383,7 +407,7 @@ class ChatWorkspace extends Component {
                                         onClick={() => this.handleQuickPrompt(item.prompt)}
                                     >
                                         <div className="prompt-card-icon">
-                                             <i className={`fas ${item.icon}`} />
+                                            <i className={`fas ${item.icon}`} />
                                         </div>
                                         <div className="prompt-card-text">
                                             <div className="title">{item.title}</div>
@@ -413,14 +437,57 @@ class ChatWorkspace extends Component {
                             )}
                             {messages.map((msg, index) => {
                                 const isUser = msg.role === 'user';
-                                const sources = msg.sources || msg.citations || [];
+                                const attachedDocs = isUser
+                                    ? (Array.isArray(msg.files) && msg.files.length > 0
+                                        ? msg.files
+                                        : (Array.isArray(msg.sources) ? msg.sources : []))
+                                    : [];
+                                const sources = !isUser ? (msg.sources || msg.citations || []) : [];
+
+                                if (isUser) {
+                                    return (
+                                        <div
+                                            key={msg.id || index}
+                                            className="chat-row-item user-align"
+                                        >
+                                            <div className="user-message-container">
+                                                {/* Attached Document Pill(s) */}
+                                                {attachedDocs.length > 0 && (
+                                                    <div className="user-attached-docs-tray">
+                                                        {attachedDocs.map((doc, dIdx) => {
+                                                            const fileName = doc.filename || doc.name || 'Tài liệu đính kèm';
+                                                            return (
+                                                                <div key={dIdx} className="user-doc-pill" title={fileName}>
+                                                                    <span className="doc-pill-icon-box">
+                                                                        <i className="far fa-file-lines" />
+                                                                    </span>
+                                                                    <span className="doc-pill-name">{fileName}</span>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
+
+                                                {/* User Text Bubble */}
+                                                {msg.content && msg.content.trim() && (
+                                                    <div className="message-bubble-box user-bubble">
+                                                        <div 
+                                                            className="message-text-content" 
+                                                            dangerouslySetInnerHTML={{ __html: renderMarkdownContent(msg.content) }} 
+                                                        />
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                }
 
                                 return (
                                     <div
                                         key={msg.id || index}
-                                        className={`chat-row-item ${isUser ? 'user-align' : 'assistant-align'}`}
+                                        className="chat-row-item assistant-align"
                                     >
-                                        <div className="message-bubble-box">
+                                        <div className="message-bubble-box assistant-bubble">
                                             <div 
                                                 className="message-text-content" 
                                                 dangerouslySetInnerHTML={{ __html: renderMarkdownContent(msg.content || '') }} 
@@ -466,14 +533,14 @@ class ChatWorkspace extends Component {
                             {/* Thinking & Retrieval Indicator */}
                             {(isSendingMessage || isUploading) && (
                                 <div className="chat-row-item assistant-align">
-                                    <div className="thinking-bubble-box">
-                                        <div className="pulse-dots-loader">
-                                            <span />
-                                            <span />
-                                            <span />
-                                        </div>
+                                    <div className="assistant-thinking-badge">
+                                        <span className="wand-icon">🪄</span>
                                         <span className="thinking-text-label">
-                                            {isUploading ? 'Đang vector hóa tài liệu đính kèm...' : 'RAG AI đang tra cứu và tổng hợp câu trả lời...'}
+                                            {isUploading
+                                                ? 'Đang nạp và phân tích tài liệu...'
+                                                : (this.state.thinkingSeconds > 0
+                                                    ? `Làm việc cho ${this.state.thinkingSeconds}s`
+                                                    : 'Làm việc...')}
                                         </span>
                                     </div>
                                 </div>
@@ -485,7 +552,7 @@ class ChatWorkspace extends Component {
                 )}
 
                 {/* Sticky Bottom Dock when conversation is active */}
-                {hasMessages && (
+                {showStream && (
                     <div className="sticky-bottom-dock">
                         <div className="dock-column-inner">
                             {this.renderInputCard()}

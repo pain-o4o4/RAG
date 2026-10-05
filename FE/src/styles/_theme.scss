@@ -721,15 +721,76 @@ i.fas.fa-brain.brand-icon {
             &.user-align {
                 justify-content: flex-end;
 
-                .message-bubble-box {
-                    background: $bg-dark-600;
-                    border: 1px solid $border-dark;
-                    color: $text-primary;
-                    padding: 10px 14px;
-                    border-radius: 18px;
+                .user-message-container {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: flex-end;
+                    gap: 8px;
                     max-width: 80%;
-                    font-size: 0.85rem;
-                    line-height: 1.55;
+
+                    .user-attached-docs-tray {
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 8px;
+                        justify-content: flex-end;
+
+                        .user-doc-pill {
+                            display: inline-flex;
+                            align-items: center;
+                            gap: 10px;
+                            background: #18181c;
+                            border: 1px solid #323238;
+                            border-radius: 9999px;
+                            padding: 8px 18px;
+                            color: #f4f4f5;
+                            font-size: 0.85rem;
+                            font-weight: 500;
+                            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+                            cursor: default;
+                            transition: all 0.2s ease;
+
+                            &:hover {
+                                background: #222228;
+                                border-color: #454550;
+                            }
+
+                            .doc-pill-icon-box {
+                                display: inline-flex;
+                                align-items: center;
+                                justify-content: center;
+                                color: #e4e4e7;
+                                font-size: 0.9rem;
+                            }
+
+                            .doc-pill-name {
+                                max-width: 280px;
+                                overflow: hidden;
+                                text-overflow: ellipsis;
+                                white-space: nowrap;
+                                letter-spacing: 0.01em;
+                            }
+                        }
+                    }
+
+                    .message-bubble-box.user-bubble,
+                    .message-bubble-box {
+                        background: #232328;
+                        border: 1px solid rgba(255, 255, 255, 0.06);
+                        color: #f4f4f5;
+                        padding: 12px 20px;
+                        border-radius: 20px;
+                        max-width: 100%;
+                        font-size: 0.925rem;
+                        line-height: 1.55;
+                        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+                        word-break: break-word;
+
+                        .message-text-content {
+                            p {
+                                margin: 0;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -887,7 +948,39 @@ i.fas.fa-brain.brand-icon {
             }
         }
 
-        // Thinking Pulse
+        // Thinking Pulse & Badge
+        .assistant-thinking-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            color: #a1a1aa;
+            font-size: 0.875rem;
+            padding: 8px 4px;
+            font-weight: 400;
+
+            .wand-icon {
+                font-size: 1.05rem;
+                display: inline-block;
+                animation: wand-pulse 1.4s ease-in-out infinite alternate;
+            }
+
+            .thinking-text-label {
+                color: #d4d4d8;
+                font-size: 0.875rem;
+            }
+        }
+
+        @keyframes wand-pulse {
+            0% {
+                transform: scale(0.95);
+                opacity: 0.75;
+            }
+            100% {
+                transform: scale(1.15);
+                opacity: 1;
+            }
+        }
+
         .thinking-bubble-box {
             display: flex;
             align-items: center;
