@@ -24,7 +24,6 @@ from app.core.exceptions import (
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # Giới hạn 50MB
 
-
 class DocumentService:
     """
     Tầng Service quản lý tài liệu và tích hợp RAG Pipeline:
@@ -181,7 +180,6 @@ class DocumentService:
 
         return new_document
 
-
     async def upload_multiple_documents(
         self,
         files: list[UploadFile],
@@ -297,7 +295,6 @@ class DocumentService:
             "uploaded": uploaded_docs,
             "failed": failed_items,
         }
-
 
     async def get_documents(
         self,
