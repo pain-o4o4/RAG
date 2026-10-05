@@ -319,8 +319,18 @@ class DocumentService:
     async def delete_document(self, doc_id: uuid.UUID, user_id: uuid.UUID) -> Document:
         """
         Nghiệp vụ xóa mềm (Soft Delete) tài liệu:
-        - Đánh dấu is_deleted = True và cập nhật deleted_at = now().
+        - Đánh dấu is_deleted = True và cập nhật deleted_at = now() trong database.
+        - Loại bỏ toàn bộ các vector nhúng của tài liệu này khỏi FAISS Vector Store để AI không truy xuất lại khi hỏi câu mới.
+        - Bảo toàn bản ghi Document và DocumentChunk trong database để các phiên chat lịch sử trước đó vẫn hiển thị trích dẫn nguồn gốc.
         """
         doc = await self.get_document_by_id(doc_id, user_id)
         await self.doc_repo.delete(doc.id, soft=True)
+
+        # Xóa các vector của tài liệu khỏi FAISS index của user
+        try:
+            vector_store = VectorStore()
+            vector_store.delete_document_vectors(user_id=user_id, document_id=doc.id)
+        except Exception as e:
+            print(f"[DocumentService] Cảnh báo khi xóa vector khỏi FAISS cho tài liệu {doc.id}: {e}")
+
         return doc

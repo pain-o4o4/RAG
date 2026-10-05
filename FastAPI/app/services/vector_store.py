@@ -127,6 +127,49 @@ class VectorStore:
         vectorstore.save_local(self.vector_dir, index_name=index_name)
         return [str(uuid.uuid4()) for _ in documents]
 
+    def delete_document_vectors(
+        self,
+        user_id: uuid.UUID,
+        document_id: uuid.UUID
+    ) -> int:
+        """
+        Xóa toàn bộ các vector của document_id khỏi chỉ mục FAISS của user:
+        - Quét danh sách tài liệu trong docstore của FAISS.
+        - Tìm tất cả ID có metadata['document_id'] trùng với document_id cần xóa.
+        - Gọi vectorstore.delete(ids_to_del) để loại bỏ các vector tương ứng.
+        - Lưu lại chỉ mục FAISS đã cập nhật trên ổ đĩa.
+        - Trả về số lượng vector đã xóa.
+        """
+        index_name = self._get_index_name(user_id)
+        faiss_path = self._get_faiss_path(index_name)
+
+        if not os.path.exists(faiss_path):
+            return 0
+
+        try:
+            vectorstore = FAISS.load_local(
+                folder_path=self.vector_dir,
+                embeddings=self.embeddings,
+                index_name=index_name,
+                allow_dangerous_deserialization=True
+            )
+            target_str = str(document_id)
+            ids_to_del = [
+                docstore_id for docstore_id, doc in vectorstore.docstore._dict.items()
+                if str(doc.metadata.get("document_id", "")) == target_str
+            ]
+
+            if not ids_to_del:
+                return 0
+
+            vectorstore.delete(ids_to_del)
+            vectorstore.save_local(self.vector_dir, index_name=index_name)
+            print(f"[VectorStore] Đã xóa {len(ids_to_del)} vectors của tài liệu {document_id} khỏi FAISS của user {user_id}")
+            return len(ids_to_del)
+        except Exception as e:
+            print(f"[VectorStore] Lỗi khi xóa vector khỏi FAISS: {e}")
+            return 0
+
     def search(
         self,
         user_id: uuid.UUID,
@@ -180,7 +223,7 @@ class VectorStore:
 
         # Tìm kiếm k lớn hơn để sau đó lọc threshold và doc_ids
         search_k = min(vectorstore.index.ntotal, max(top_k * 4, 10))
-        #tìm chunk từ vector
+        
         try:
             results = vectorstore.similarity_search_with_relevance_scores(
                 query,

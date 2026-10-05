@@ -1,10 +1,13 @@
 import uuid
+import json
 from typing import Optional
 from datetime import datetime
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
-from app.core.config import settings
 
+from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 from app.models.chat_session import ChatSession
 from app.models.chat_message import ChatMessage
 from app.models.document import Document
@@ -165,11 +168,23 @@ class ChatService:
         if session.title == "Cuộc trò chuyện mới":
             session.title = clean_content[:40] + ("..." if len(clean_content) > 40 else "")
 
-        # 3. Lấy tất cả document_ids thuộc phiên chat
+        # 3. Lấy tất cả document_ids thuộc phiên chat (chỉ lấy tài liệu chưa bị xóa)
         session_docs = await self.get_session_documents(session_id)
         doc_ids = [d.id for d in session_docs]
         if session.document_id and session.document_id not in doc_ids:
-            doc_ids.append(session.document_id)
+            primary_doc = await self.doc_repo.find_by_id(session.document_id)
+            if primary_doc and not primary_doc.is_deleted:
+                doc_ids.append(session.document_id)
+
+        # Kiểm tra xem phiên chat này có từng gắn với tài liệu riêng không
+        cfg_stmt = select(session_documents.c.document_id).where(session_documents.c.session_id == session_id)
+        cfg_res = await self.db.execute(cfg_stmt)
+        configured_doc_ids = [r[0] for r in cfg_res.all()]
+        if session.document_id and session.document_id not in configured_doc_ids:
+            configured_doc_ids.append(session.document_id)
+
+        is_doc_specific = len(configured_doc_ids) > 0
+        target_doc_ids = doc_ids if doc_ids else ([] if is_doc_specific else None)
 
         # 4. Kích hoạt RAG Service riêng biệt
         recent_messages = await self.get_session_messages(session_id, user_id)
@@ -182,7 +197,7 @@ class ChatService:
         rag_result = await rag_service.query(
             query=clean_content,
             user_id=user_id,
-            document_ids=doc_ids if doc_ids else None,
+            document_ids=target_doc_ids,
             chat_history=chat_history
         )
 
@@ -397,12 +412,11 @@ class ChatService:
         content: str
     ):
         """
-        Gửi câu hỏi và sinh phản hồi dạng Streaming qua Server-Sent Events (SSE):
-        - 1. Lưu câu hỏi của User vào cơ sở dữ liệu.
+        Gửi câu hỏi và stream phản hồi từ AI về Client:
+        - 1. Lưu tin nhắn người dùng.
         - 2. Kích hoạt luồng Stream từ RAGService và đẩy từng event về Client.
         - 3. Lưu câu trả lời hoàn chỉnh của Assistant và trích dẫn vào PostgreSQL khi stream kết thúc.
         """
-        import json
         clean_content = content.strip()
         if not clean_content:
             raise EmptyMessageException("Nội dung tin nhắn không được để trống")
@@ -422,7 +436,18 @@ class ChatService:
         session_docs = await self.get_session_documents(session_id)
         doc_ids = [d.id for d in session_docs]
         if session.document_id and session.document_id not in doc_ids:
-            doc_ids.append(session.document_id)
+            primary_doc = await self.doc_repo.find_by_id(session.document_id)
+            if primary_doc and not primary_doc.is_deleted:
+                doc_ids.append(session.document_id)
+
+        cfg_stmt = select(session_documents.c.document_id).where(session_documents.c.session_id == session_id)
+        cfg_res = await self.db.execute(cfg_stmt)
+        configured_doc_ids = [r[0] for r in cfg_res.all()]
+        if session.document_id and session.document_id not in configured_doc_ids:
+            configured_doc_ids.append(session.document_id)
+
+        is_doc_specific = len(configured_doc_ids) > 0
+        target_doc_ids = doc_ids if doc_ids else ([] if is_doc_specific else None)
 
         recent_messages = await self.get_session_messages(session_id, user_id)
         chat_history = [
@@ -440,13 +465,14 @@ class ChatService:
         async for sse_event in rag_service.stream_query(
             query=clean_content,
             user_id=user_id,
-            document_ids=doc_ids if doc_ids else None,
+            document_ids=target_doc_ids,
             chat_history=chat_history
         ):
             yield sse_event
 
             # Bóc tách dữ liệu để chuẩn bị lưu trữ vào DB
-            for line in sse_event.strip().split("\n"):
+            for line in sse_event.split("\n"):
+                line = line.strip()
                 if line.startswith("data:"):
                     raw_data = line[5:].strip()
                     if raw_data == "[DONE]":
@@ -464,14 +490,17 @@ class ChatService:
         full_answer = "".join(full_tokens).strip()
         if full_answer:
             try:
-                assistant_msg = ChatMessage(
-                    session_id=session_id,
-                    role="assistant",
-                    content=full_answer,
-                    sources=collected_sources,
-                    model_name=settings.LLM_MODEL,
-                )
-                self.db.add(assistant_msg)
-                await self.db.commit()
+                # Sử dụng AsyncSessionLocal để đảm bảo session độc lập,
+                # tránh bị ảnh hưởng khi stream connection kết thúc
+                async with AsyncSessionLocal() as persist_db:
+                    assistant_msg = ChatMessage(
+                        session_id=session_id,
+                        role="assistant",
+                        content=full_answer,
+                        sources=collected_sources if collected_sources else None,
+                        model_name=settings.LLM_MODEL,
+                    )
+                    persist_db.add(assistant_msg)
+                    await persist_db.commit()
             except Exception as e:
-                print(f"[ChatService] Warning: Failed to persist streamed assistant message: {e}")
+                print(f"[ChatService] Error: Failed to persist streamed assistant message: {e}")

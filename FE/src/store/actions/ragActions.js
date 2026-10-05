@@ -7,6 +7,7 @@ import {
     createChatSessionApi,
     deleteChatSessionApi,
     getChatMessagesApi,
+    sendChatMessageApi,
     streamChatMessageApi,
     uploadAndChatNewSessionApi,
     uploadAndChatExistingSessionApi
@@ -280,19 +281,35 @@ export const sendMessage = (sessionId, content, files = []) => {
                         dispatch({ type: actionTypes.SET_IS_SENDING_MESSAGE, isSending: false });
                     };
 
-                    await streamChatMessageApi(activeId, text, userId, {
-                        onSources: (sources) => {
-                            pendingSources = Array.isArray(sources) ? sources : [];
-                        },
-                        onToken: (chunk) => {
-                            ensureStarted();
-                            dispatch({ type: actionTypes.STREAM_ASSISTANT_TOKEN, messageId: streamMsgId, text: chunk });
-                        },
-                        onDone: () => {
-                            ensureStarted();
-                            dispatch({ type: actionTypes.STREAM_ASSISTANT_TOKEN, messageId: streamMsgId, text: '', done: true });
+                    try {
+                        await streamChatMessageApi(activeId, text, userId, {
+                            onSources: (sources) => {
+                                pendingSources = Array.isArray(sources) ? sources : [];
+                            },
+                            onToken: (chunk) => {
+                                ensureStarted();
+                                dispatch({ type: actionTypes.STREAM_ASSISTANT_TOKEN, messageId: streamMsgId, text: chunk });
+                            },
+                            onDone: () => {
+                                ensureStarted();
+                                dispatch({ type: actionTypes.STREAM_ASSISTANT_TOKEN, messageId: streamMsgId, text: '', done: true });
+                            }
+                        });
+                    } catch (streamErr) {
+                        console.warn('Stream error, falling back to standard send:', streamErr);
+                        if (!started) {
+                            const fallbackRes = await sendChatMessageApi(activeId, text);
+                            if (fallbackRes && fallbackRes.assistant_message) {
+                                dispatch({
+                                    type: actionTypes.ADD_ASSISTANT_MESSAGE,
+                                    userMessage: fallbackRes.user_message,
+                                    assistantMessage: fallbackRes.assistant_message
+                                });
+                            }
+                        } else {
+                            throw streamErr;
                         }
-                    });
+                    }
                 }
             }
         } catch (e) {

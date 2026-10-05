@@ -72,12 +72,28 @@ export const sendChatMessageApi = (sessionId, content) => {
  */
 export const streamChatMessageApi = async (sessionId, content, userId, callbacks = {}) => {
     const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+    let uid = userId;
+    if (!uid) {
+        try {
+            const persistUser = localStorage.getItem('persist:user');
+            if (persistUser) {
+                const parsed = JSON.parse(persistUser);
+                const info = JSON.parse(parsed.userInfo || '{}');
+                if (info && info.id) uid = info.id;
+            }
+        } catch (_) {}
+    }
+
+    const headers = {
+        'Content-Type': 'application/json'
+    };
+    if (uid) {
+        headers['X-User-Id'] = uid;
+    }
+
     const res = await fetch(`${backendUrl}/api/v1/chat/sessions/${sessionId}/messages/stream`, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            ...(userId ? { 'X-User-Id': userId } : {})
-        },
+        headers,
         body: JSON.stringify({ content })
     });
 
