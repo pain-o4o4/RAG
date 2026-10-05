@@ -11,8 +11,8 @@ from sqlalchemy import select, func
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.core.repository import BaseRepository
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from app.services.extractor_service import ExtractorService
+from app.services.chunking_service import ChunkingService
 from app.services.vector_store import VectorStore
 from app.core.config import settings
 from app.core.exceptions import (
@@ -21,8 +21,6 @@ from app.core.exceptions import (
     DocumentAlreadyExistsException,
 )
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
-MAX_FILE_SIZE = 50 * 1024 * 1024  # Giới hạn 50MB
 
 class DocumentService:
     """
@@ -30,8 +28,8 @@ class DocumentService:
     - Tiếp nhận file upload, kiểm tra định dạng và kích thước.
     - Tính mã băm SHA256 chống tải file trùng lặp.
     - Lưu trữ file vật lý trên đĩa.
-    - Trích xuất nội dung (PDF, DOCX, TXT), Chunking, Embedding và nạp FAISS.
-    - Truy vấn, phân trang và xóa mềm bản ghi trong Database.
+    - Điều phối: ExtractorService (Load) -> ChunkingService (Split) -> VectorStore (FAISS).
+    - Quản lý vòng đời và truy vấn dữ liệu qua BaseRepository.
     """
 
     def __init__(self, db: AsyncSession):
@@ -41,9 +39,9 @@ class DocumentService:
 
     async def _process_document_rag(self, doc: Document) -> None:
         """
-        Quy trình ETL RAG tự động cho tài liệu bằng LangChain:
-        1. Trích xuất text từ file vật lý (PDF, DOCX, TXT) bằng LangChain DocumentLoaders.
-        2. Cắt nhỏ thành các chunks bằng RecursiveCharacterTextSplitter.
+        Quy trình ETL RAG tự động cho tài liệu:
+        1. Trích xuất text từ file vật lý (PDF, DOCX, TXT) qua ExtractorService.
+        2. Cắt nhỏ thành các chunks và gán metadata qua ChunkingService.
         3. Tạo vector embeddings và nạp vào Vector Database FAISS.
         4. Lưu thông tin các DocumentChunk vào PostgreSQL.
         5. Cập nhật Document.status = "COMPLETED" (hoặc "FAILED" nếu có lỗi).
@@ -52,32 +50,11 @@ class DocumentService:
             doc.status = "PROCESSING"
             await self.db.commit()
 
-            # 1. & 2. Trích xuất text và phân đoạn (Langchain loaders & text splitter)
-            ext = Path(doc.file_path).suffix.lower()
-            if ext == ".pdf":
-                loader = PyPDFLoader(doc.file_path)
-            elif ext in [".docx", ".doc"]:
-                loader = Docx2txtLoader(doc.file_path)
-            elif ext == ".txt":
-                loader = TextLoader(doc.file_path, autodetect_encoding=True)
-            else:
-                raise ValueError("Unsupported extension")
-                
-            documents = loader.load()
-            
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=settings.CHUNK_SIZE,
-                chunk_overlap=settings.CHUNK_OVERLAP,
-                separators=["\n\n", "\n", ".", "?", "!", " ", ""]
-            )
-            split_docs = text_splitter.split_documents(documents)
-            
-            # Gán thêm metadata để liên kết chunk_index
-            for i, d in enumerate(split_docs):
-                d.metadata["document_id"] = str(doc.id)
-                d.metadata["chunk_index"] = i
-                if "page" in d.metadata:
-                    d.metadata["page_number"] = d.metadata["page"] + 1
+            # 1. Trích xuất văn bản từ file vật lý
+            documents = ExtractorService.load_document(doc.file_path)
+
+            # 2. Phân đoạn văn bản (Text Chunking)
+            split_docs = ChunkingService.split_documents(documents=documents, doc_id=doc.id)
 
             # 3. Nạp vào Vector Database FAISS (FAISS Wrapper)
             vector_store = VectorStore()
@@ -86,15 +63,16 @@ class DocumentService:
                 documents=split_docs
             )
 
-            # 4. Lưu DocumentChunk vào DB
-            for i, (d, v_id) in enumerate(zip(split_docs, vector_ids)):
+            # 4. Lưu DocumentChunk vào Database
+            for d, v_id in zip(split_docs, vector_ids):
                 db_chunk = DocumentChunk(
                     document_id=doc.id,
-                    chunk_index=i,
+                    chunk_index=d.metadata.get("chunk_index", 0),
                     content=d.page_content,
                     vector_id=v_id,
                     chunk_metadata=d.metadata,
-                    token_count=max(1, len(d.page_content) // 4),
+                    # token_count=max(1, len(d.page_content) // 4),
+                    token_count=2048
                 )
                 self.db.add(db_chunk)
 
@@ -123,9 +101,9 @@ class DocumentService:
             raise InvalidFileException("Tên tệp tin không hợp lệ")
 
         ext = Path(file.filename).suffix.lower()
-        if ext not in ALLOWED_EXTENSIONS:
+        if ext not in settings.ALLOWED_EXTENSIONS:
             raise InvalidFileException(
-                f"Định dạng tệp '{ext}' không được hỗ trợ. Hệ thống chỉ chấp nhận: {', '.join(ALLOWED_EXTENSIONS)}"
+                f"Định dạng tệp '{ext}' không được hỗ trợ. Hệ thống chỉ chấp nhận: {', '.join(settings.ALLOWED_EXTENSIONS)}"
             )
 
         content = await file.read()
@@ -134,7 +112,7 @@ class DocumentService:
         if file_size == 0:
             raise InvalidFileException("Tệp tin rỗng, không chứa dữ liệu")
 
-        if file_size > MAX_FILE_SIZE:
+        if file_size > settings.MAX_FILE_SIZE:
             raise InvalidFileException("Kích thước tệp vượt quá giới hạn tối đa cho phép (50MB)")
 
         # Tính toán hash SHA256
@@ -214,10 +192,10 @@ class DocumentService:
 
             # 1. Kiểm tra định dạng đuôi file
             ext = Path(fname).suffix.lower()
-            if ext not in ALLOWED_EXTENSIONS:
+            if ext not in settings.ALLOWED_EXTENSIONS:
                 failed_items.append({
                     "filename": fname,
-                    "reason": f"Định dạng '{ext}' không được hỗ trợ (chỉ chấp nhận: {', '.join(ALLOWED_EXTENSIONS)})"
+                    "reason": f"Định dạng '{ext}' không được hỗ trợ (chỉ chấp nhận: {', '.join(settings.ALLOWED_EXTENSIONS)})"
                 })
                 continue
 
@@ -231,7 +209,7 @@ class DocumentService:
                 })
                 continue
 
-            if file_size > MAX_FILE_SIZE:
+            if file_size > settings.MAX_FILE_SIZE:
                 failed_items.append({
                     "filename": fname,
                     "reason": "Kích thước tệp vượt quá giới hạn 50MB"
@@ -305,38 +283,24 @@ class DocumentService:
         search: Optional[str] = None
     ) -> tuple[list[Document], int]:
         """
-        Nghiệp vụ lấy danh sách tài liệu có lọc và phân trang:
-        - Lọc theo user_id và chỉ lấy tài liệu chưa bị xóa mềm.
-        - Tùy chọn lọc theo status (PENDING, PROCESSING, COMPLETED, FAILED).
-        - Tùy chọn tìm kiếm theo tên tệp (filename).
+        Nghiệp vụ lấy danh sách tài liệu có lọc và phân trang qua BaseRepository:
+        - Lọc theo user_id và chỉ lấy tài liệu chưa bị xóa mềm (is_deleted=False).
+        - Tùy chọn lọc theo status và tìm kiếm tên file (ilike).
         """
-        base_query = select(Document).where(
-            Document.user_id == user_id,
-            Document.is_deleted == False
-        )
-
+        expressions = []
         if status:
-            base_query = base_query.where(Document.status == status.upper())
-
+            expressions.append(Document.status == status.upper())
         if search:
-            base_query = base_query.where(Document.filename.ilike(f"%{search.strip()}%"))
+            expressions.append(Document.filename.ilike(f"%{search.strip()}%"))
 
-        # Đếm tổng số bản ghi
-        count_query = select(func.count()).select_from(base_query.subquery())
-        count_res = await self.db.execute(count_query)
-        total = count_res.scalar() or 0
-
-        # Lấy dữ liệu theo trang
-        offset = (page - 1) * limit
-        items_query = (
-            base_query.order_by(Document.created_at.desc())
-            .offset(offset)
-            .limit(limit)
+        return await self.doc_repo.find_page(
+            *expressions,
+            user_id=user_id,
+            is_deleted=False,
+            order_by=Document.created_at.desc(),
+            page=page,
+            limit=limit
         )
-        items_res = await self.db.execute(items_query)
-        items = items_res.scalars().all()
-
-        return list(items), total
 
     async def get_document_by_id(self, doc_id: uuid.UUID, user_id: uuid.UUID) -> Document:
         """

@@ -106,7 +106,6 @@ class RAGService:
         return sources, context_text
 
     def build_prompt(self, query: str, context_text: str, chat_history: Optional[list[dict]] = None) -> str:
-        """Xây dựng Prompt RAG linh hoạt, kết hợp tài liệu và kiến thức sẵn có."""
         history_text = ""
         if chat_history:
             formatted_turns = []
@@ -119,19 +118,25 @@ class RAGService:
                 history_text = "LỊCH SỬ TRAO ĐỔI GẦN ĐÂY:\n" + "\n".join(formatted_turns) + "\n\n"
 
         return (
-            "Bạn là trợ lý AI chuyên nghiệp hỗ trợ phân tích tài liệu và giải đáp câu hỏi của người dùng một cách chi tiết và sâu sắc.\n"
+            "Bạn là chuyên gia phân tích nghiệp vụ và trợ lý AI cao cấp. "
+            "Nhiệm vụ của bạn là giải đáp câu hỏi của người dùng một cách CHI TIẾT, TOÀN DIỆN và CHUYÊN NGHIỆP dựa trên tài liệu được cung cấp.\n\n"
             f"{history_text}"
-            "Dưới đây là các thông tin trích xuất từ tài liệu liên quan:\n"
+            "DƯỚI ĐÂY LÀ CÁC ĐOẠN TRÍCH TỪ TÀI LIỆU:\n"
             "---------------------\n"
             f"{context_text}\n"
             "---------------------\n\n"
-            "HƯỚNG DẪN TRẢ LỜI QUAN TRỌNG (TUÂN THỦ CHẶT CHẼ):\n"
-            "1. Câu trả lời PHẢI dựa trên các thông tin, dữ kiện có trong các đoạn trích từ tài liệu được cung cấp ở trên.\n"
-            "2. XỬ LÝ TRƯỜNG HỢP KHÔNG TÌM THẤY THÔNG TIN: Nếu trong các đoạn trích tài liệu hoàn toàn không có thông tin phù hợp hoặc không đủ căn cứ để trả lời câu hỏi của người dùng, bạn BẮT BUỘC PHẢI THÔNG BÁO RÕ RÀNG: 'Tài liệu được cung cấp không chứa thông tin phù hợp để trả lời câu hỏi này.' Tuyệt đối KHÔNG tự ý suy diễn, phỏng đoán hoặc bịa đặt câu trả lời thiếu căn cứ (chống Hallucination).\n"
-            "3. Khi thông tin có trong tài liệu, hãy trả lời chính xác, chi tiết và trích dẫn rõ nguồn gốc (tên tài liệu, trang) tương ứng với nội dung được nêu.\n"
-            "4. Về định dạng: Dùng định dạng Markdown chuẩn, trình bày mạch lạc, rõ ràng. Với danh sách liệt kê, hãy dùng ký tự gạch đầu dòng '-' và không để dòng trống thừa giữa các mục danh sách.\n\n"
+            "QUY TẮC PHẢN HỒI BẮT BUỘC (TUÂN THỦ TUYỆT ĐỐI):\n"
+            "1. TÍNH CHÍNH XÁC & CHỐNG ẢO GIÁC (ZERO-HALLUCINATION):\n"
+            "   - CHỈ sử dụng thông tin và dữ kiện có trong các đoạn trích tài liệu ở trên.\n"
+            "   - Tuyệt đối KHÔNG tự ý bịa đặt, phỏng đoán hoặc bổ sung kiến thức ngoài tài liệu.\n"
+            "   - Nếu tài liệu hoàn toàn không có thông tin hoặc không đủ căn cứ, hãy nêu rõ ràng: 'Tài liệu được cung cấp không chứa đủ thông tin để trả lời chi tiết phần này.'\n\n"
+            "2. ĐỘ CHI TIẾT VÀ CẤU TRÚC PHÂN TÍCH:\n"
+            "   - Khai thác TRIỆT ĐỂ mọi thông tin có trong các đoạn trích. Tránh trả lời sơ sài hoặc tóm tắt quá ngắn.\n"
+            "   - Với mỗi chức năng / quy trình, hãy phân tích đầy đủ các góc độ nếu tài liệu có đề cập: Mục đích, Tác nhân (Actor), Tiền điều kiện, Hậu điều kiện, Các bước trong luồng xử lý (Flow of events), và Dữ liệu liên quan.\n"
+            "   - Trình bày dạng Markdown đẹp mắt: Sử dụng tiêu đề (###), danh sách gạch đầu dòng rõ ràng, bảng biểu (nếu có so sánh) và trích dẫn rõ số trang / tên tài liệu tương ứng.\n\n"
             f"Câu hỏi của người dùng: {query}"
         )
+
 
     async def generate_answer(
         self,

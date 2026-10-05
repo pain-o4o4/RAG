@@ -4,7 +4,7 @@ from app.services.chat_service import ChatService
 from app.services.rag_service import RAGService, RAGResult
 from app.services.extractor_service import ExtractorService
 from app.services.chunking_service import ChunkingService
-from app.services.embedding_service import EmbeddingService
+from app.services.embedding_service import GeminiEmbeddings768
 from app.services.vector_store import VectorStore
 
 __all__ = [
@@ -15,6 +15,6 @@ __all__ = [
     "RAGResult",
     "ExtractorService",
     "ChunkingService",
-    "EmbeddingService",
+    "GeminiEmbeddings768",
     "VectorStore",
 ]

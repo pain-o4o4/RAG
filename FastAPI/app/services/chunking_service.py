@@ -1,108 +1,49 @@
-import re
-from typing import Any
+import uuid
+from typing import Optional
+from langchain_core.documents import Document as LangchainDocument
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from app.core.config import settings
 
 
 class ChunkingService:
     """
     Service phân đoạn văn bản (Text Chunking):
-    - Chia văn bản lớn thành các đoạn nhỏ (chunks) theo cửa sổ trượt (sliding window).
-    - Giữ lại thông tin ngữ cảnh với độ chồng lấp (chunk_overlap).
-    - Ưu tiên cắt theo ranh giới đoạn văn (\n\n), câu (. ! ?) để bảo toàn ngữ nghĩa.
+    - Chia nhỏ các LangChain Documents theo kích thước chunk_size và chunk_overlap.
+    - Tự động gán metadata quan trọng: document_id, chunk_index, page_number.
     """
 
     @staticmethod
-    def chunk_extracted_pages(
-        pages: list[dict[str, Any]],
+    def split_documents(
+        documents: list[LangchainDocument],
+        doc_id: Optional[uuid.UUID] = None,
         chunk_size: int = settings.CHUNK_SIZE,
         chunk_overlap: int = settings.CHUNK_OVERLAP
-    ) -> list[dict[str, Any]]:
+    ) -> list[LangchainDocument]:
         """
-        Nhận danh sách pages trích xuất từ ExtractorService:
-        Trả về danh sách chunks:
-        [
-            {
-                "chunk_index": 0,
-                "content": "...",
-                "token_count": 85,
-                "metadata": {"page_number": 1}
-            },
-            ...
-        ]
+        Cắt nhỏ danh sách tài liệu LangChain thành các đoạn chunks và gán metadata.
         """
-        all_chunks: list[dict[str, Any]] = []
-        global_chunk_idx = 0
+        if not documents:
+            return []
 
-        for page in pages:
-            text = page.get("text", "").strip()
-            page_num = page.get("page_number", 1)
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=["\n\n", "\n", ".", "?", "!", " ", ""]
+        )
 
-            if not text:
-                continue
+        split_docs = text_splitter.split_documents(documents)
 
-            page_chunks = ChunkingService._split_text_with_overlap(
-                text=text,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap
-            )
-
-            for c_text in page_chunks:
-                # Ước lượng token (~4 ký tự = 1 token theo chuẩn OpenAI/Gemini)
-                est_tokens = max(1, len(c_text) // 4)
-                all_chunks.append({
-                    "chunk_index": global_chunk_idx,
-                    "content": c_text,
-                    "token_count": est_tokens,
-                    "metadata": {
-                        "page_number": page_num
-                    }
-                })
-                global_chunk_idx += 1
-
-        return all_chunks
-
-    @staticmethod
-    def _split_text_with_overlap(
-        text: str,
-        chunk_size: int,
-        chunk_overlap: int
-    ) -> list[str]:
-        """Tách một đoạn văn bản theo chunk_size và chunk_overlap."""
-        if len(text) <= chunk_size:
-            return [text]
-
-        chunks = []
-        start = 0
-        text_len = len(text)
-
-        while start < text_len:
-            end = start + chunk_size
-
-            if end >= text_len:
-                chunk = text[start:].strip()
-                if chunk:
-                    chunks.append(chunk)
-                break
-
-            # Cố gắng tìm vị trí cắt tự nhiên (dấu chấm câu hoặc xuống dòng) trong khoảng lân cận
-            best_break = -1
-            search_window = text[max(start, end - 100):end]
+        # Gán metadata chuẩn hóa cho từng chunk
+        for i, d in enumerate(split_docs):
+            if doc_id:
+                d.metadata["document_id"] = str(doc_id)
+            d.metadata["chunk_index"] = i
             
-            # Ưu tiên ngắt ở \n hoặc dấu chấm câu
-            breaks = [m.end() for m in re.finditer(r'(\n\n|\n|\.\s|\?\s|\!\s)', search_window)]
-            if breaks:
-                best_break = max(start, end - 100) + breaks[-1]
+            # Chuẩn hóa số trang (PyPDFLoader bắt đầu từ 0)
+            if "page" in d.metadata:
+                d.metadata["page_number"] = d.metadata["page"] + 1
+            elif "page_number" not in d.metadata:
+                d.metadata["page_number"] = 1
 
-            if best_break != -1 and best_break > start:
-                end = best_break
-
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-
-            # Cửa sổ trượt
-            start = end - chunk_overlap
-            if start < 0 or start >= end:
-                start = end
-
-        return chunks
+        return split_docs

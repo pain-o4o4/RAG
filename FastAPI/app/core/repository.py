@@ -80,6 +80,38 @@ class BaseRepository(Generic[T]):
         res = await self.db.execute(stmt)
         return list(res.scalars().all())
 
+    async def find_page(
+        self,
+        *expressions,
+        order_by: Optional[Any] = None,
+        page: int = 1,
+        limit: int = 10,
+        include: Optional[list] = None,
+        **filters
+    ) -> tuple[list[T], int]:
+        """
+        Truy vấn danh sách phân trang (Page Pagination) kèm đếm tổng số bản ghi:
+        - Hỗ trợ cả filter chính xác (**filters) và biểu thức nâng cao (*expressions: ilike, in_, v.v.).
+        """
+        stmt = select(self.model).filter_by(**filters)
+        if expressions:
+            stmt = stmt.where(*expressions)
+
+        # 1. Đếm tổng số bản ghi thỏa mãn
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        count_res = await self.db.execute(count_stmt)
+        total = count_res.scalar() or 0
+
+        # 2. Phân trang và sắp xếp
+        if order_by is not None:
+            stmt = stmt.order_by(order_by)
+        offset = max(0, (page - 1) * limit)
+        stmt = stmt.offset(offset).limit(limit)
+        stmt = self._apply_options(stmt, include)
+
+        res = await self.db.execute(stmt)
+        return list(res.scalars().all()), total
+
     async def count(self, **filters) -> int:
         """Đếm số lượng bản ghi thỏa mãn điều kiện."""
         stmt = select(func.count()).select_from(self.model).filter_by(**filters)

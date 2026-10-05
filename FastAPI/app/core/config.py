@@ -12,11 +12,13 @@ class Settings(BaseSettings):
     STORAGE_DIR: str = str(_ROOT_DIR / "storage")
     UPLOAD_DIR: str = str(_ROOT_DIR / "storage" / "uploads")
     VECTOR_STORE_DIR: str = str(_ROOT_DIR / "storage" / "vector_store")
-    CHUNK_SIZE: int = 500
-    CHUNK_OVERLAP: int = 50
-    TOP_K_RESULTS: int = 4
+    CHUNK_SIZE: int = 1200
+    CHUNK_OVERLAP: int = 200
+    TOP_K_RESULTS: int = 8
     SIMILARITY_THRESHOLD: float = 0.20
-
+    EMBEDDING_DIMENSION: int = 768
+    ALLOWED_EXTENSIONS: set[str] = {".pdf", ".docx", ".txt"}
+    MAX_FILE_SIZE: int = 50 * 1024 * 1024
     DATABASE_URL: str = ""
     GEMINI_API_KEY: str = ""
     EMBEDDING_MODEL: str = "gemini-embedding-2"
