@@ -7,7 +7,7 @@ from typing import Optional, Any
 # 1. DTO tạo mới phiên hội thoại
 class CreateSessionRequest(BaseModel):
     title: Optional[str] = Field("Cuộc trò chuyện mới", max_length=255, description="Tiêu đề phiên chat")
-    document_id: Optional[UUID] = Field(None, description="Tùy chọn gắn với 1 tài liệu cụ thể")
+    document_ids: Optional[list[UUID]] = Field(None, description="Danh sách tài liệu liên kết với phiên chat")
 
 
 # 2. DTO cập nhật tiêu đề phiên chat

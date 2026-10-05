@@ -7,14 +7,16 @@ Hệ thống RAG Backend hoàn chỉnh được xây dựng trên nền tảng *
 ## 🌟 Tính năng chính đã hoàn thiện 100%
 
 ### 1. Quản lý tài liệu (Document Management)
+
 - **Hỗ trợ đa định dạng:** Trích xuất tự động nội dung từ `.pdf` (`pypdf`), `.docx` (`python-docx`) và `.txt` (`utf-8`).
 - **Batch Upload kiên cường (Resilient Batching):** Tải lên một hoặc nhiều tài liệu cùng lúc, file nào lỗi/trùng sẽ được gom riêng mà không làm gián đoạn các file hợp lệ khác.
 - **Chống trùng lặp (Deduplication):** Sử dụng mã băm SHA256 ngăn tải lên cùng một nội dung lặp lại.
 - **Quản lý danh sách & Xóa mềm:** Hỗ trợ phân trang, tìm kiếm theo tên và soft-delete bảo toàn dữ liệu.
 
 ### 2. Pipeline RAG Cốt lõi (Core RAG Engine)
+
 - **Chunking:** Cắt nhỏ văn bản thành các đoạn theo cửa sổ trượt (Sliding Window: `CHUNK_SIZE=500`, `CHUNK_OVERLAP=50`), giữ nguyên ngữ nghĩa câu.
-- **Vector Embeddings:** Sử dụng mô hình `text-embedding-004` (768 chiều) từ Google GenAI.
+- **Vector Embeddings:** Sử dụng mô hình gemini-embedding-2 (3072chiều) từ Google GenAI.
 - **Vector Database (FAISS):** Quản lý chỉ mục vector riêng biệt cho từng người dùng, tính toán Cosine Similarity qua chuẩn hóa L2 và `IndexFlatIP`.
 - **Chống Hallucination (Bịa đặt):** Áp dụng ngưỡng tương đồng (`SIMILARITY_THRESHOLD`). Nếu câu hỏi không liên quan đến tài liệu, hệ thống từ chối trả lời rõ ràng: *"Không tìm thấy thông tin phù hợp trong tài liệu đã tải lên để trả lời câu hỏi của bạn. Hệ thống tuân thủ nguyên tắc không đưa ra câu trả lời thiếu căn cứ."*
 - **Trích dẫn nguồn minh bạch (Citations):** Mỗi câu trả lời của AI đều đi kèm danh sách `sources` chi tiết gồm tên tệp tin, số trang, điểm tương đồng (similarity score) và đoạn trích dẫn (snippet).
@@ -95,16 +97,19 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 Truy cập tài liệu tương tác trực tiếp tại: **[http://127.0.0.1:8000/api/v1/docs](http://127.0.0.1:8000/api/v1/docs)**
 
 ### 1. Authentication
+
 - `POST /api/v1/auth/register`: Đăng ký người dùng mới (Mã hóa Bcrypt).
 - `POST /api/v1/auth/login`: Xác thực tài khoản.
 
 ### 2. Document Management
+
 - `POST /api/v1/documents/upload`: Tải lên một hoặc nhiều tài liệu (`.pdf`, `.docx`, `.txt`), tự động chạy pipeline RAG.
 - `GET /api/v1/documents`: Lấy danh sách tài liệu có phân trang (`page`, `limit`), tìm kiếm (`search`), lọc trạng thái (`status`).
 - `GET /api/v1/documents/{doc_id}`: Xem chi tiết tài liệu và số lượng chunks.
 - `DELETE /api/v1/documents/{doc_id}`: Xóa mềm tài liệu.
 
 ### 3. Chat Sessions & Trò chuyện RAG Đa tài liệu (Web AI Experience)
+
 - `POST /api/v1/chat/sessions/upload` **(Mới)**: Tải lên 1 hoặc nhiều tài liệu **kèm câu hỏi/prompt** ngay trong một request. Hệ thống xử lý RAG tức thì, trả lời kèm nguồn trích dẫn và khởi tạo `session_id`.
 - `POST /api/v1/chat/sessions/{id}/upload` **(Mới)**: Nạp thêm 1 hoặc nhiều tài liệu vào phiên chat hiện tại (kèm câu hỏi tùy chọn). RAG sẽ tổng hợp trên **toàn bộ** tài liệu (cũ + mới).
 - `POST /api/v1/chat/sessions/{id}/messages`: Tiếp tục gửi câu hỏi thuần text trong phiên chat. RAG tự động tìm kiếm trên tất cả tài liệu thuộc phiên đó.

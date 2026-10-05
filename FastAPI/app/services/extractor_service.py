@@ -27,14 +27,26 @@ class ExtractorService:
         try:
             if ext == ".pdf":
                 loader = PyPDFLoader(file_path)
+                docs = loader.load()
             elif ext in [".docx", ".doc"]:
                 loader = Docx2txtLoader(file_path)
-            elif ext == ".txt":
-                loader = TextLoader(file_path, autodetect_encoding=True)
+                docs = loader.load()
+            elif ext in [".txt"]:
+                text_content = ""
+                for enc in ["utf-8", "utf-8-sig", "latin-1", "cp1252", "utf-16"]:
+                    try:
+                        with open(file_path, "r", encoding=enc) as f:
+                            text_content = f.read()
+                        if text_content:
+                            break
+                    except Exception:
+                        continue
+                if not text_content:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        text_content = f.read()
+                docs = [LangchainDocument(page_content=text_content, metadata={"source": file_path, "page_number": 1})]
             else:
                 raise InvalidFileException(f"Định dạng tệp '{ext}' chưa được hỗ trợ trích xuất.")
-
-            docs = loader.load()
 
             # Lọc bỏ các trang rỗng không có chữ
             non_empty_docs = [d for d in docs if d.page_content and d.page_content.strip()]

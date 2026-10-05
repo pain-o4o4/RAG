@@ -36,7 +36,6 @@ class RAGService:
         self,
         query: str,
         user_id: uuid.UUID,
-        document_id: Optional[uuid.UUID] = None,
         document_ids: Optional[list[uuid.UUID]] = None,
         top_k: int = settings.TOP_K_RESULTS,
         threshold: float = settings.SIMILARITY_THRESHOLD
@@ -53,7 +52,6 @@ class RAGService:
             user_id=user_id,
             query=query,
             top_k=top_k,
-            document_id=document_id,
             document_ids=document_ids,
             similarity_threshold=threshold,
         )
@@ -175,11 +173,10 @@ class RAGService:
             client = genai.Client(api_key=settings.GEMINI_API_KEY)
             models_to_try = [
                 settings.LLM_MODEL,
-                "gemini-flash-latest",
-                "gemini-3.8-flash",
                 "gemini-3.7-flash",
+                "gemini-3.8-flash",
                 "gemini-3.5-flash",
-                "gemini-flash-lite-latest",
+                "gemini-flash-latest",
             ]
             seen = set()
             ordered_models = [m for m in models_to_try if not (m in seen or seen.add(m))]
@@ -227,7 +224,6 @@ class RAGService:
         self,
         query: str,
         user_id: uuid.UUID,
-        document_id: Optional[uuid.UUID] = None,
         document_ids: Optional[list[uuid.UUID]] = None,
         chat_history: Optional[list[dict]] = None,
     ) -> RAGResult:
@@ -235,7 +231,6 @@ class RAGService:
         sources, context_text = await self.retrieve_context(
             query=query,
             user_id=user_id,
-            document_id=document_id,
             document_ids=document_ids,
         )
 
@@ -247,7 +242,6 @@ class RAGService:
                 aug_sources, aug_context = await self.retrieve_context(
                     query=augmented_query,
                     user_id=user_id,
-                    document_id=document_id,
                     document_ids=document_ids,
                 )
                 if aug_sources:

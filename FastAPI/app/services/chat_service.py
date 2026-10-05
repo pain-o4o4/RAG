@@ -54,24 +54,18 @@ class ChatService:
         self,
         user_id: uuid.UUID,
         title: Optional[str] = "Cuộc trò chuyện mới",
-        document_id: Optional[uuid.UUID] = None,
         document_ids: Optional[list[uuid.UUID]] = None,
     ) -> ChatSession:
         """Tạo một phiên hội thoại mới cho User."""
+        primary_doc_id = document_ids[0] if document_ids else None
         session = await self.session_repo.create(
             title=title or "Cuộc trò chuyện mới",
             user_id=user_id,
-            document_id=document_id,
+            document_id=primary_doc_id,
         )
 
-        all_doc_ids = []
-        if document_id:
-            all_doc_ids.append(document_id)
         if document_ids:
-            all_doc_ids.extend([d for d in document_ids if d not in all_doc_ids])
-
-        if all_doc_ids:
-            await self.link_documents_to_session(session.id, all_doc_ids)
+            await self.link_documents_to_session(session.id, document_ids)
 
         session.documents = await self.get_session_documents(session.id)
         return session
@@ -188,7 +182,6 @@ class ChatService:
             query=clean_content,
             user_id=user_id,
             document_ids=doc_ids if doc_ids else None,
-            document_id=session.document_id if not doc_ids else None,
             chat_history=chat_history
         )
 
@@ -260,11 +253,22 @@ class ChatService:
         assistant_msg: Optional[ChatMessage] = None
 
         clean_content = content.strip() if content else None
-        if clean_content:
+        user_attached_sources = [
+            {
+                "id": str(d.id),
+                "filename": d.filename,
+                "file_type": d.file_type,
+                "file_size": d.file_size
+            }
+            for d in uploaded_docs
+        ] if uploaded_docs else None
+
+        if clean_content or user_attached_sources:
             user_msg = ChatMessage(
                 session_id=session.id,
                 role="user",
-                content=clean_content
+                content=clean_content or "",
+                sources=user_attached_sources
             )
             self.db.add(user_msg)
 
@@ -330,11 +334,22 @@ class ChatService:
         assistant_msg: Optional[ChatMessage] = None
 
         clean_content = content.strip() if content else None
-        if clean_content:
+        user_attached_sources = [
+            {
+                "id": str(d.id),
+                "filename": d.filename,
+                "file_type": d.file_type,
+                "file_size": d.file_size
+            }
+            for d in newly_uploaded
+        ] if newly_uploaded else None
+
+        if clean_content or user_attached_sources:
             user_msg = ChatMessage(
                 session_id=session.id,
                 role="user",
-                content=clean_content
+                content=clean_content or "",
+                sources=user_attached_sources
             )
             self.db.add(user_msg)
 

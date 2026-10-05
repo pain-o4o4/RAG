@@ -46,7 +46,7 @@ async def create_session(
     session = await service.create_session(
         user_id=current_user.id,
         title=payload.title,
-        document_id=payload.document_id,
+        document_ids=payload.document_ids,
     )
     return session
 
