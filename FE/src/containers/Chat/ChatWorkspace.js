@@ -91,7 +91,11 @@ class ChatWorkspace extends Component {
                 this.props.dispatchFetchMessages(this.props.activeSessionId);
             }
         }
-        if (prevProps.messages?.length !== this.props.messages?.length || this.props.isSendingMessage) {
+        const prevLast = prevProps.messages?.[prevProps.messages.length - 1];
+        const currLast = this.props.messages?.[this.props.messages.length - 1];
+        const lastContentGrew = prevLast && currLast && prevLast.id === currLast.id
+            && prevLast.content !== currLast.content;
+        if (prevProps.messages?.length !== this.props.messages?.length || this.props.isSendingMessage || lastContentGrew) {
             this.scrollToBottom();
         }
 

@@ -221,6 +221,42 @@ async def send_message(
 
 
 @router.post(
+    "/sessions/{id}/messages/stream",
+    summary="Gửi câu hỏi và nhận câu trả lời dạng Streaming thời gian thực (SSE)",
+)
+async def send_message_stream(
+    id: UUID,
+    payload: SendMessageRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Trải nghiệm phản hồi thời gian thực qua Server-Sent Events (SSE):
+    - Client nhận các sự kiện:
+      1. `event: sources`: Danh sách các tài liệu tham khảo (trả về đầu tiên).
+      2. `event: token`: Từng mảnh chữ AI sinh ra (nhảy chữ dạng typewriter).
+      3. `event: done`: Báo hiệu kết thúc phản hồi.
+    - Phía Server tự động lưu câu hỏi và câu trả lời hoàn chỉnh vào PostgreSQL.
+    """
+    from fastapi.responses import StreamingResponse
+
+    service = ChatService(db)
+    return StreamingResponse(
+        service.send_message_stream(
+            session_id=id,
+            user_id=current_user.id,
+            content=payload.content,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post(
     "/sessions/{id}/upload",
     response_model=AddDocumentsAndChatResponse,
     status_code=status.HTTP_200_OK,

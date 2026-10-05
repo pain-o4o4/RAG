@@ -233,8 +233,52 @@ class RAGService:
             user_id=user_id,
             document_ids=document_ids,
         )
-
+        # for i in context_text:
+        #     print(i)
         # Nếu chưa tìm thấy kết quả và có lịch sử hội thoại, thử kết hợp với câu hỏi trước
+        if (not sources or len(sources) == 0) and chat_history:
+            prev_user_queries = [m["content"] for m in chat_history if m.get("role") == "user"]
+            if prev_user_queries:
+                augmented_query = f"{prev_user_queries[-1]} {query}"
+                aug_sources, aug_context = await self.retrieve_context(
+                    query=augmented_query,
+                    user_id=user_id,
+                    document_ids=document_ids,
+                )
+                
+                if aug_sources:
+                    sources, context_text = aug_sources, aug_context
+
+        return await self.generate_answer(
+            query=query,
+            context_text=context_text,
+            sources=sources,
+            chat_history=chat_history
+        )
+
+    async def stream_query(
+        self,
+        query: str,
+        user_id: uuid.UUID,
+        document_ids: Optional[list[uuid.UUID]] = None,
+        chat_history: Optional[list[dict]] = None,
+    ):
+        """
+        Quy trình RAG Streaming qua Server-Sent Events (SSE):
+        - 1. Retrieval (FAISS): Lấy ngữ cảnh và trích dẫn.
+        - 2. Bắn sự kiện 'sources' chứa danh sách tài liệu tham khảo ngay lập tức.
+        - 3. Generation (Gemini Streaming): Bắn từng token/chunk chữ dạng sự kiện 'token'.
+        - 4. Bắn sự kiện 'done' khi hoàn tất.
+        """
+        import json
+        import asyncio
+
+        sources, context_text = await self.retrieve_context(
+            query=query,
+            user_id=user_id,
+            document_ids=document_ids,
+        )
+
         if (not sources or len(sources) == 0) and chat_history:
             prev_user_queries = [m["content"] for m in chat_history if m.get("role") == "user"]
             if prev_user_queries:
@@ -247,9 +291,61 @@ class RAGService:
                 if aug_sources:
                     sources, context_text = aug_sources, aug_context
 
-        return await self.generate_answer(
-            query=query,
-            context_text=context_text,
-            sources=sources,
-            chat_history=chat_history
+        # 1. Bắn danh sách nguồn trích dẫn về Client trước
+        yield f"event: sources\ndata: {json.dumps(sources, ensure_ascii=False)}\n\n"
+
+        if not context_text or not sources:
+            no_info_msg = (
+                "Không tìm thấy thông tin phù hợp trong tài liệu đã tải lên để trả lời câu hỏi của bạn. "
+                "Hệ thống tuân thủ nguyên tắc không đưa ra câu trả lời thiếu căn cứ."
+            )
+            yield f"event: token\ndata: {json.dumps({'text': no_info_msg}, ensure_ascii=False)}\n\n"
+            yield f"event: done\ndata: [DONE]\n\n"
+            return
+
+        prompt = self.build_prompt(query, context_text, chat_history=chat_history)
+        is_real_gemini_key = (
+            settings.GEMINI_API_KEY 
+            and "your_gemini_api" not in settings.GEMINI_API_KEY.lower()
         )
+
+        if is_real_gemini_key:
+            from google import genai
+            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            models_to_try = [
+                settings.LLM_MODEL,
+                "gemini-3.7-flash",
+                "gemini-3.8-flash",
+                "gemini-3.5-flash",
+                "gemini-flash-latest",
+            ]
+            seen = set()
+            ordered_models = [m for m in models_to_try if not (m in seen or seen.add(m))]
+
+            success = False
+            for m in ordered_models:
+                try:
+                    response_stream = await client.aio.models.generate_content_stream(
+                        model=m,
+                        contents=prompt,
+                    )
+                    async for chunk in response_stream:
+                        if chunk and chunk.text:
+                            yield f"event: token\ndata: {json.dumps({'text': chunk.text}, ensure_ascii=False)}\n\n"
+                    success = True
+                    break
+                except Exception:
+                    continue
+
+            if not success:
+                err_msg = "Lỗi kết nối tới mô hình AI khi tạo dòng phản hồi."
+                yield f"event: token\ndata: {json.dumps({'text': err_msg}, ensure_ascii=False)}\n\n"
+        else:
+            top_source = sources[0]
+            dummy_text = (
+                f"Dựa trên tài liệu '{top_source['document_name']}' (Trang {top_source['page']}):\n\n"
+                f"\"{top_source['snippet']}\""
+            )
+            yield f"event: token\ndata: {json.dumps({'text': dummy_text}, ensure_ascii=False)}\n\n"
+
+        yield f"event: done\ndata: [DONE]\n\n"

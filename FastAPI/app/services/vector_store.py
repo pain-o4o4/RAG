@@ -180,7 +180,7 @@ class VectorStore:
 
         # Tìm kiếm k lớn hơn để sau đó lọc threshold và doc_ids
         search_k = min(vectorstore.index.ntotal, max(top_k * 4, 10))
-        
+        #tìm chunk từ vector
         try:
             results = vectorstore.similarity_search_with_relevance_scores(
                 query,

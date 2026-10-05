@@ -7,7 +7,7 @@ import {
     createChatSessionApi,
     deleteChatSessionApi,
     getChatMessagesApi,
-    sendChatMessageApi,
+    streamChatMessageApi,
     uploadAndChatNewSessionApi,
     uploadAndChatExistingSessionApi
 } from '../../services/userService';
@@ -267,14 +267,32 @@ export const sendMessage = (sessionId, content, files = []) => {
                 }
 
                 if (activeId) {
-                    const res = await sendChatMessageApi(activeId, text);
-                    if (res && res.assistant_message) {
-                        dispatch({
-                            type: actionTypes.ADD_ASSISTANT_MESSAGE,
-                            userMessage: res.user_message,
-                            assistantMessage: res.assistant_message
-                        });
-                    }
+                    const userId = getState().user?.userInfo?.id;
+                    const streamMsgId = 'stream-' + Date.now();
+                    let started = false;
+                    let pendingSources = [];
+                    // Chỉ tạo bubble assistant khi có token đầu tiên → trước đó vẫn hiện badge "Làm việc..."
+                    const ensureStarted = () => {
+                        if (started) return;
+                        started = true;
+                        dispatch({ type: actionTypes.STREAM_ASSISTANT_START, messageId: streamMsgId });
+                        dispatch({ type: actionTypes.STREAM_ASSISTANT_SOURCES, messageId: streamMsgId, sources: pendingSources });
+                        dispatch({ type: actionTypes.SET_IS_SENDING_MESSAGE, isSending: false });
+                    };
+
+                    await streamChatMessageApi(activeId, text, userId, {
+                        onSources: (sources) => {
+                            pendingSources = Array.isArray(sources) ? sources : [];
+                        },
+                        onToken: (chunk) => {
+                            ensureStarted();
+                            dispatch({ type: actionTypes.STREAM_ASSISTANT_TOKEN, messageId: streamMsgId, text: chunk });
+                        },
+                        onDone: () => {
+                            ensureStarted();
+                            dispatch({ type: actionTypes.STREAM_ASSISTANT_TOKEN, messageId: streamMsgId, text: '', done: true });
+                        }
+                    });
                 }
             }
         } catch (e) {

@@ -95,6 +95,36 @@ const ragReducer = (state = initialState, action) => {
                 messages: [...updated, action.assistantMessage]
             };
         }
+
+        // Streaming: tạo bubble assistant rỗng, rồi nối dần token vào
+        case actionTypes.STREAM_ASSISTANT_START:
+            return {
+                ...state,
+                messages: [...state.messages, {
+                    id: action.messageId,
+                    role: 'assistant',
+                    content: '',
+                    sources: [],
+                    isStreaming: true,
+                    created_at: new Date().toISOString()
+                }]
+            };
+        case actionTypes.STREAM_ASSISTANT_SOURCES:
+            return {
+                ...state,
+                messages: state.messages.map((m) =>
+                    m.id === action.messageId ? { ...m, sources: action.sources } : m
+                )
+            };
+        case actionTypes.STREAM_ASSISTANT_TOKEN:
+            return {
+                ...state,
+                messages: state.messages.map((m) =>
+                    m.id === action.messageId
+                        ? { ...m, content: (m.content || '') + (action.text || ''), isStreaming: !action.done }
+                        : m
+                )
+            };
         case actionTypes.SET_IS_SENDING_MESSAGE:
             return {
                 ...state,

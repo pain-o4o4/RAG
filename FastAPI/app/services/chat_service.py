@@ -3,6 +3,7 @@ from typing import Optional
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
+from app.core.config import settings
 
 from app.models.chat_session import ChatSession
 from app.models.chat_message import ChatMessage
@@ -388,3 +389,89 @@ class ChatService:
             await self.db.refresh(assistant_msg)
 
         return session, user_msg, assistant_msg, newly_uploaded, all_session_docs
+
+    async def send_message_stream(
+        self,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str
+    ):
+        """
+        Gửi câu hỏi và sinh phản hồi dạng Streaming qua Server-Sent Events (SSE):
+        - 1. Lưu câu hỏi của User vào cơ sở dữ liệu.
+        - 2. Kích hoạt luồng Stream từ RAGService và đẩy từng event về Client.
+        - 3. Lưu câu trả lời hoàn chỉnh của Assistant và trích dẫn vào PostgreSQL khi stream kết thúc.
+        """
+        import json
+        clean_content = content.strip()
+        if not clean_content:
+            raise EmptyMessageException("Nội dung tin nhắn không được để trống")
+
+        session = await self.get_session_by_id(session_id, user_id)
+
+        # 1. Lưu tin nhắn người dùng
+        user_msg = ChatMessage(
+            session_id=session_id,
+            role="user",
+            content=clean_content
+        )
+        self.db.add(user_msg)
+        if session.title == "Cuộc trò chuyện mới":
+            session.title = clean_content[:40] + ("..." if len(clean_content) > 40 else "")
+
+        session_docs = await self.get_session_documents(session_id)
+        doc_ids = [d.id for d in session_docs]
+        if session.document_id and session.document_id not in doc_ids:
+            doc_ids.append(session.document_id)
+
+        recent_messages = await self.get_session_messages(session_id, user_id)
+        chat_history = [
+            {"role": m.role, "content": m.content}
+            for m in recent_messages if m.id != user_msg.id
+        ][-6:]
+
+        await self.db.commit()
+
+        # 2. Khởi chạy luồng RAG Stream
+        rag_service = RAGService(self.db)
+        full_tokens = []
+        collected_sources = []
+
+        async for sse_event in rag_service.stream_query(
+            query=clean_content,
+            user_id=user_id,
+            document_ids=doc_ids if doc_ids else None,
+            chat_history=chat_history
+        ):
+            yield sse_event
+
+            # Bóc tách dữ liệu để chuẩn bị lưu trữ vào DB
+            for line in sse_event.strip().split("\n"):
+                if line.startswith("data:"):
+                    raw_data = line[5:].strip()
+                    if raw_data == "[DONE]":
+                        continue
+                    try:
+                        parsed = json.loads(raw_data)
+                        if isinstance(parsed, list):
+                            collected_sources = parsed
+                        elif isinstance(parsed, dict) and "text" in parsed:
+                            full_tokens.append(parsed["text"])
+                    except Exception:
+                        pass
+
+        # 3. Lưu câu trả lời hoàn chỉnh của AI vào DB
+        full_answer = "".join(full_tokens).strip()
+        if full_answer:
+            try:
+                assistant_msg = ChatMessage(
+                    session_id=session_id,
+                    role="assistant",
+                    content=full_answer,
+                    sources=collected_sources,
+                    model_name=settings.LLM_MODEL,
+                )
+                self.db.add(assistant_msg)
+                await self.db.commit()
+            except Exception as e:
+                print(f"[ChatService] Warning: Failed to persist streamed assistant message: {e}")

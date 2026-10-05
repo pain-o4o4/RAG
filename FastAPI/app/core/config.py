@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     STORAGE_DIR: str = str(_ROOT_DIR / "storage")
     UPLOAD_DIR: str = str(_ROOT_DIR / "storage" / "uploads")
     VECTOR_STORE_DIR: str = str(_ROOT_DIR / "storage" / "vector_store")
-    CHUNK_SIZE: int = 1200
-    CHUNK_OVERLAP: int = 200
+    CHUNK_SIZE: int = 500
+    CHUNK_OVERLAP: int = 50
     TOP_K_RESULTS: int = 8
     SIMILARITY_THRESHOLD: float = 0.20
     EMBEDDING_DIMENSION: int = 768
