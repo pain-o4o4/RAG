@@ -236,9 +236,13 @@ class VectorStore:
                 k=search_k,
                 filter=filter_func if target_doc_ids else None
             )
-            # Chuyển đổi khoảng cách L2 sang điểm tương đồng 0.0 - 1.0
             results = [(doc, 1.0 / (1.0 + max(0.0, float(score)))) for doc, score in raw_results]
-
+        print("SCORE")
+        for i, (doc, score) in enumerate(results, 1):
+            print(f"[{i}] Điểm tương đồng (0.0 - 1.0): {score:.4f}")
+        print ("chunk lấy ra số lượng k search = " , search_k)
+        for i, result in enumerate(results, 1):
+            print(f"[VectorStore] Result {i}: {result}")
         matched_results = []
         for doc, score in results:
             float_score = float(score)
@@ -255,5 +259,9 @@ class VectorStore:
 
             if len(matched_results) >= top_k:
                 break
+  
 
+        print("CHUNK SAU KHI LỌC với số lượng top_k = so sánh với similarity_threshold" , top_k)
+        for i, matched_result in enumerate(matched_results, 1):
+            print(f"[VectorStore] Matched result {i}: {matched_result}")
         return matched_results

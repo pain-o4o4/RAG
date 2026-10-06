@@ -1,8 +1,12 @@
 import uuid
+import warnings
 from typing import Optional
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+
+warnings.filterwarnings("ignore", message=".*automatic function calling.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*Automatic function calling.*", category=UserWarning)
 
 from app.models.document import Document
 from app.services.vector_store import VectorStore
@@ -111,6 +115,15 @@ class RAGService:
             return [], ""
 
         context_text = "\n\n".join(context_blocks)
+                # In kiểm tra:
+        print("\n" + "="*30 + " KẾT QUẢ RETRIEVE " + "="*30)
+        for i, (source, block) in enumerate(zip(sources, context_blocks)):
+            print(f"\n--- [Trích đoạn {i+1}] ---")
+            print("SOURCE:", source)
+            print("CONTEXT NỘI DUNG:\n", block)
+        print("="*80 + "\n")
+
+        context_text = "\n\n".join(context_blocks)
         return sources, context_text
 
     def build_prompt(self, query: str, context_text: str, chat_history: Optional[list[dict]] = None) -> str:
@@ -167,6 +180,9 @@ class RAGService:
             )
 
         prompt = self.build_prompt(query, context_text, chat_history=chat_history)
+        print("===================================")
+        print("context gửi lên LLM bao gồm cả system prompt + lịch sử chat chứ không riêng chunk lấy ra được".capitalize(),prompt)
+        print("===================================")
         is_real_gemini_key = (
             settings.GEMINI_API_KEY 
             and "your_gemini_api" not in settings.GEMINI_API_KEY.lower()
@@ -180,7 +196,12 @@ class RAGService:
 
         if is_real_gemini_key:
             from google import genai
+            from google.genai import types
+
             client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            gen_config = types.GenerateContentConfig(
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+            )
             models_to_try = [
                 settings.LLM_MODEL,
                 "gemini-3.7-flash",
@@ -197,6 +218,7 @@ class RAGService:
                     response = await client.aio.models.generate_content(
                         model=m,
                         contents=prompt,
+                        config=gen_config,
                     )
                     if response and response.text:
                         ai_content = response.text
@@ -243,7 +265,7 @@ class RAGService:
             user_id=user_id,
             document_ids=document_ids,
         )
-
+        
         # Nếu chưa tìm thấy kết quả và có lịch sử hội thoại, thử kết hợp với câu hỏi trước
         if (not sources or len(sources) == 0) and chat_history:
             prev_user_queries = [m["content"] for m in chat_history if m.get("role") == "user"]
@@ -313,6 +335,9 @@ class RAGService:
 
         # 2. Xây dựng prompt
         prompt = self.build_prompt(query, context_text, chat_history=chat_history)
+        print("==================================================")
+        print("context gửi lên LLM bao gồm cả system prompt + lịch sử chat chứ không riêng chunk lấy ra được \n".upper(), prompt)
+        print("==================================================")
         is_real_gemini_key = (
             settings.GEMINI_API_KEY 
             and "your_gemini_api" not in settings.GEMINI_API_KEY.lower()
@@ -320,7 +345,12 @@ class RAGService:
 
         if is_real_gemini_key:
             from google import genai
+            from google.genai import types
+
             client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            gen_config = types.GenerateContentConfig(
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+            )
             models_to_try = [
                 settings.LLM_MODEL,
                 "gemini-flash-lite-latest",
@@ -337,6 +367,7 @@ class RAGService:
                     response_stream = await client.aio.models.generate_content_stream(
                         model=m,
                         contents=prompt,
+                        config=gen_config,
                     )
                     async for chunk in response_stream:
                         if chunk and hasattr(chunk, "text") and chunk.text:
