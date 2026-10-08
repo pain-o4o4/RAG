@@ -3,14 +3,15 @@ import warnings
 from typing import Optional
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 warnings.filterwarnings("ignore", message=".*automatic function calling.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*Automatic function calling.*", category=UserWarning)
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from app.models.document import Document
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
 from app.services.vector_store import VectorStore
+from app.services.tool_service import ToolService
 from app.core.config import settings
 
 
@@ -27,10 +28,11 @@ class RAGResult:
 
 class RAGService:
     """
-    RAG Service độc lập chuẩn 100% LangChain:
-    - Triển khai toàn bộ quy trình: Vector Embedding -> FAISS Retrieval -> Threshold Filtering -> LLM Generation (ChatGoogleGenerativeAI).
-    - Xử lý triệt để bài toán chống Hallucination (tự động thông báo khi tài liệu không có thông tin phù hợp).
-    - Cung cấp nguồn trích dẫn cụ thể (tên tài liệu, trang, snippet, điểm tương đồng).
+    RAG Service thông minh tích hợp Tool Calling chuẩn LangChain:
+    - Bước 1 (Intent & Decision): LLM phân tích xem có cần tra cứu tài liệu hay không.
+    - Nhánh A (Chào hỏi/Xã giao): Trả lời trực tiếp ngay, không tốn tài nguyên tìm kiếm FAISS.
+    - Nhánh B (Tra cứu tri thức): Kích hoạt tool 'search_knowledge_base' -> Lấy Chunks -> Tổng hợp phản hồi có trích dẫn.
+    - Đảm bảo Zero-Loop: Luồng 2 bước dứt khoát, không lặp vô tận.
     """
 
     def __init__(self, db: AsyncSession):
@@ -57,101 +59,39 @@ class RAGService:
             return "".join(parts)
         return str(content or "")
 
-    async def retrieve_context(
+    def _build_intent_messages(
         self,
         query: str,
-        user_id: uuid.UUID,
-        document_ids: Optional[list[uuid.UUID]] = None,
-        top_k: int = settings.TOP_K_RESULTS,
-        threshold: float = settings.SIMILARITY_THRESHOLD
-    ) -> tuple[list[dict], str]:
-        """
-        Giai đoạn 1: Retrieval (Truy xuất qua Vector Database FAISS)
-        1. Tạo vector embedding cho câu hỏi của người dùng.
-        2. Tìm kiếm các vector gần nhất trong FAISS index của user.
-        3. Áp dụng ngưỡng similarity_threshold để loại bỏ kết quả không liên quan.
-        4. Truy vấn Database lấy tên tệp tương ứng.
-        """
-        # Tìm kiếm trực tiếp trong FAISS (VectorStore tự xử lý text embedding)
-        matched = self.vector_store.search(
-            user_id=user_id,
-            query=query,
-            top_k=top_k,
-            document_ids=document_ids,
-            similarity_threshold=threshold,
+        chat_history: Optional[list[dict]] = None
+    ) -> list:
+        """Xây dựng danh sách message để LLM phân tích ý định và quyết định gọi Tool."""
+        system_prompt = (
+            "Bạn là trợ lý AI thông minh chuyên nghiệp hỗ trợ giải đáp thắc mắc và phân tích tài liệu.\n"
+            "- Nếu người dùng chào hỏi, cảm ơn hoặc hỏi kiến thức thông thường: Hãy trả lời trực tiếp, thân thiện và KHÔNG gọi công cụ.\n"
+            "- Nếu người dùng hỏi về tài liệu, quy chế, chính sách, hợp đồng, số liệu nội bộ: HÃY GỌI công cụ 'search_knowledge_base' để tra cứu thông tin chính xác."
         )
+        messages = [SystemMessage(content=system_prompt)]
 
-        if not matched:
-            return [], ""
+        if chat_history:
+            for m in chat_history[-4:]:
+                role = m.get("role")
+                content = m.get("content", "").strip()
+                if content:
+                    if role == "user":
+                        messages.append(HumanMessage(content=content[:300]))
+                    elif role == "assistant":
+                        messages.append(AIMessage(content=content[:300]))
 
-        # 3. Lấy tên tệp tin tương ứng từ DB
-        doc_ids = []
-        for m in matched:
-            d_id = m.get("document_id")
-            if d_id:
-                try:
-                    doc_ids.append(uuid.UUID(d_id))
-                except ValueError:
-                    pass
+        messages.append(HumanMessage(content=query))
+        return messages
 
-        doc_names = {}
-        if doc_ids:
-            docs_query = select(Document.id, Document.filename).where(
-                Document.id.in_(doc_ids),
-                Document.is_deleted == False
-            )
-            docs_res = await self.db.execute(docs_query)
-            for d_id, d_name in docs_res.all():
-                doc_names[str(d_id)] = d_name
-
-        # 4. Đóng gói danh sách trích dẫn (sources)
-        sources = []
-        context_blocks = []
-
-        for i, m in enumerate(matched, 1):
-            d_id = str(m.get("document_id", ""))
-            # Bỏ qua nếu tài liệu đã bị xóa mềm trong database
-            if d_id not in doc_names:
-                continue
-
-            d_name = doc_names[d_id]
-            page_num = m.get("metadata", {}).get("page_number", 1)
-            snippet = m.get("content", "")
-            score = round(m.get("score", 0.0), 3)
-
-            sources.append({
-                "document_id": d_id,
-                "document_name": d_name,
-                "chunk_index": m.get("chunk_index"),
-                "similarity_score": score,
-                "page": page_num,
-                "snippet": snippet[:250] + ("..." if len(snippet) > 250 else ""),
-            })
-
-            context_blocks.append(
-                f"[Trích đoạn {len(sources)} - Tài liệu: '{d_name}', Trang {page_num} (Độ tương đồng: {score})]:\n{snippet}"
-            )
-
-        if not sources:
-            return [], ""
-
-        context_text = "\n\n".join(context_blocks)
-        # In kiểm tra:
-        print("\n" + "="*30 + " KẾT QUẢ RETRIEVE " + "="*30)
-        for i, (source, block) in enumerate(zip(sources, context_blocks)):
-            print(f"\n--- [Trích đoạn {i+1}] ---")
-            print("SOURCE:", source)
-            print("CONTEXT NỘI DUNG:\n", block)
-        print("="*80 + "\n")
-
-        return sources, context_text
-
-    def build_prompt(
+    def _build_rag_prompt(
         self,
         query: str,
         context_text: str,
         chat_history: Optional[list[dict]] = None
     ) -> str:
+        """Xây dựng prompt tổng hợp câu trả lời dựa trên các đoạn trích xuất từ Tool."""
         history_text = ""
         if chat_history:
             formatted_turns = []
@@ -171,102 +111,12 @@ class RAGService:
             "---------------------\n"
             f"{context_text}\n"
             "---------------------\n\n"
-            "QUY TẮC PHẢN HỒI BẮT BUỘC (TUÂN THỦ TUYỆT ĐỐI):\n"
-            "1. TÍNH CHÍNH XÁC & CHỐNG ẢO GIÁC (ZERO-HALLUCINATION):\n"
-            "   - CHỈ sử dụng thông tin và dữ kiện có trong các đoạn trích tài liệu ở trên.\n"
-            "   - Tuyệt đối KHÔNG tự ý bịa đặt, phỏng đoán hoặc bổ sung kiến thức ngoài tài liệu.\n"
-            "   - Nếu tài liệu hoàn toàn không có thông tin hoặc không đủ căn cứ, hãy nêu rõ ràng: 'Tài liệu được cung cấp không chứa đủ thông tin để trả lời chi tiết phần này.'\n\n"
-            "2. ĐỘ CHI TIẾT VÀ CẤU TRÚC PHÂN TÍCH:\n"
-            "   - Khai thác TRIỆT ĐỂ mọi thông tin có trong các đoạn trích. Tránh trả lời sơ sài hoặc tóm tắt quá ngắn.\n"
-            "   - Với mỗi chức năng / quy trình, hãy phân tích đầy đủ các góc độ nếu tài liệu có đề cập: Mục đích, Tác nhân (Actor), Tiền điều kiện, Hậu điều kiện, Các bước trong luồng xử lý (Flow of events), và Dữ liệu liên quan.\n"
-            "   - Trình bày dạng Markdown đẹp mắt: Sử dụng tiêu đề (###), danh sách gạch đầu dòng rõ ràng, bảng biểu (nếu có so sánh) và trích dẫn rõ số trang / tên tài liệu tương ứng.\n\n"
+            "QUY TẮC PHẢN HỒI BẮT BUỘC:\n"
+            "1. CHỐNG ẢO GIÁC (ZERO-HALLUCINATION): Chỉ sử dụng thông tin có trong các đoạn trích ở trên. Không tự ý bịa đặt.\n"
+            "2. ĐỘ CHI TIẾT VÀ CẤU TRÚC: Khai thác triệt để các dữ kiện, trình bày Markdown đẹp mắt với tiêu đề và danh sách gạch đầu dòng rõ ràng.\n"
+            "3. TRÍCH DẪN: Nêu rõ tên tài liệu và số trang tương ứng khi đưa ra số liệu/quy định.\n\n"
             f"Câu hỏi của người dùng: {query}"
         )
-
-    async def generate_answer(
-        self,
-        query: str,
-        context_text: str,
-        sources: list[dict],
-        chat_history: Optional[list[dict]] = None
-    ) -> RAGResult:
-        """
-        Giai đoạn 2: Generation (Sinh phản hồi qua LangChain ChatGoogleGenerativeAI)
-        """
-        if not context_text or not sources:
-            return RAGResult(
-                answer=(
-                    "Không tìm thấy thông tin phù hợp trong tài liệu đã tải lên để trả lời câu hỏi của bạn. "
-                    "Hệ thống tuân thủ nguyên tắc không đưa ra câu trả lời thiếu căn cứ."
-                ),
-                sources=[],
-                model_name=settings.LLM_MODEL,
-            )
-
-        prompt = self.build_prompt(query, context_text, chat_history=chat_history)
-        print("===================================")
-        print("context gửi lên LLM bao gồm cả system prompt + lịch sử chat chứ không riêng chunk lấy ra được".capitalize(), prompt)
-        print("===================================")
-
-        ai_content = ""
-        prompt_tokens = None
-        completion_tokens = None
-        total_tokens = None
-
-        try:
-            response = await self.llm.ainvoke(prompt)
-            ai_content = self._extract_text(response.content)
-            if hasattr(response, "usage_metadata") and response.usage_metadata:
-                prompt_tokens = response.usage_metadata.get("input_tokens")
-                completion_tokens = response.usage_metadata.get("output_tokens")
-                total_tokens = response.usage_metadata.get("total_tokens")
-        except Exception as e:
-            ai_content = f"Lỗi kết nối tới mô hình AI ({settings.LLM_MODEL}): {str(e)}"
-
-        return RAGResult(
-            answer=ai_content,
-            sources=sources,
-            model_name=settings.LLM_MODEL,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-        )
-
-    async def _prepare_rag_context(
-        self,
-        query: str,
-        user_id: uuid.UUID,
-        document_ids: Optional[list[uuid.UUID]] = None,
-        chat_history: Optional[list[dict]] = None,
-    ) -> tuple[list[dict], str, str]:
-        """Gom nhóm logic Retrieval và Build Prompt dùng chung cho cả query và stream_query."""
-        sources, context_text = await self.retrieve_context(
-            query=query,
-            user_id=user_id,
-            document_ids=document_ids,
-        )
-        
-        # Nếu chưa tìm thấy kết quả và có lịch sử hội thoại, thử kết hợp với câu hỏi trước
-        if (not sources or len(sources) == 0) and chat_history:
-            prev_user_queries = [m["content"] for m in chat_history if m.get("role") == "user"]
-            if prev_user_queries:
-                augmented_query = f"{prev_user_queries[-1]} {query}"
-                aug_sources, aug_context = await self.retrieve_context(
-                    query=augmented_query,
-                    user_id=user_id,
-                    document_ids=document_ids,
-                )
-                if aug_sources:
-                    sources, context_text = aug_sources, aug_context
-
-        prompt = ""
-        if context_text and sources:
-            prompt = self.build_prompt(query, context_text, chat_history=chat_history)
-            print("==================================================")
-            print("context gửi lên LLM bao gồm cả system prompt + lịch sử chat chứ không riêng chunk lấy ra được \n".upper(), prompt)
-            print("==================================================")
-
-        return sources, context_text, prompt
 
     async def query(
         self,
@@ -275,19 +125,57 @@ class RAGService:
         document_ids: Optional[list[uuid.UUID]] = None,
         chat_history: Optional[list[dict]] = None,
     ) -> RAGResult:
-        """Hàm chính điều phối toàn bộ quy trình RAG: Retrieval qua FAISS -> Generation qua Gemini."""
-        sources, context_text, prompt = await self._prepare_rag_context(
-            query=query,
-            user_id=user_id,
-            document_ids=document_ids,
-            chat_history=chat_history
-        )
+        """Hàm đồng bộ xử lý câu hỏi: Quyết định gọi Tool -> Thực thi -> Sinh câu trả lời."""
+        tool_service = ToolService(self.db, self.vector_store, user_id)
+        tools = tool_service.get_tools()
+        tool_map = {t.name: t for t in tools}
+        llm_with_tools = self.llm.bind_tools(tools)
 
-        return await self.generate_answer(
-            query=query,
-            context_text=context_text,
+        intent_messages = self._build_intent_messages(query, chat_history)
+
+        # LƯỢT 1: Phân tích Intent
+        first_step = await llm_with_tools.ainvoke(intent_messages)
+
+        # Nhánh A: Không cần gọi tool (Chào hỏi / Chat thông thường)
+        if not first_step.tool_calls:
+            answer = self._extract_text(first_step.content)
+            return RAGResult(
+                answer=answer,
+                sources=[],
+                model_name=settings.LLM_MODEL
+            )
+
+        # Nhánh B: Có yêu cầu gọi tool tra cứu tài liệu
+        for tc in first_step.tool_calls:
+            t_name = tc["name"]
+            t_args = tc.get("args", {})
+            if t_name in tool_map:
+                if t_name == "search_knowledge_base" and "document_ids" not in t_args and document_ids:
+                    t_args["document_ids"] = [str(d) for d in document_ids]
+                obs = await tool_map[t_name].ainvoke(t_args)
+            else:
+                obs = ""
+
+        # LƯỢT 2: Tổng hợp câu trả lời từ ngữ cảnh đã tra cứu
+        sources = tool_service.retrieved_sources
+        if not sources:
+            return RAGResult(
+                answer=(
+                    "Không tìm thấy thông tin phù hợp trong tài liệu đã tải lên để trả lời câu hỏi của bạn. "
+                    "Hệ thống tuân thủ nguyên tắc không đưa ra câu trả lời thiếu căn cứ."
+                ),
+                sources=[],
+                model_name=settings.LLM_MODEL
+            )
+
+        prompt = self._build_rag_prompt(query, obs, chat_history=chat_history)
+        final_response = await self.llm.ainvoke(prompt)
+        final_answer = self._extract_text(final_response.content)
+
+        return RAGResult(
+            answer=final_answer,
             sources=sources,
-            chat_history=chat_history
+            model_name=settings.LLM_MODEL
         )
 
     async def stream_query(
@@ -298,23 +186,49 @@ class RAGService:
         chat_history: Optional[list[dict]] = None,
     ):
         """
-        Luồng sinh phản hồi dạng Python Generator qua LangChain astream:
-        1. Retrieval qua FAISS.
-        2. Phát event `{'type': 'sources', 'data': sources}`.
-        3. Phát từng event `{'type': 'token', 'content': chunk}` theo thời gian thực.
-        4. Phát event `{'type': 'done'}` báo hiệu kết thúc.
+        Luồng sinh phản hồi dạng Streaming qua Server-Sent Events:
+        - Nhánh A (Chào hỏi): Bắn sources rỗng ngay -> Stream câu trả lời trực tiếp.
+        - Nhánh B (Tra cứu): Gọi Tool -> Bắn sources ngay -> Stream câu trả lời tổng hợp.
         """
-        sources, context_text, prompt = await self._prepare_rag_context(
-            query=query,
-            user_id=user_id,
-            document_ids=document_ids,
-            chat_history=chat_history
-        )
+        tool_service = ToolService(self.db, self.vector_store, user_id)
+        tools = tool_service.get_tools()
+        tool_map = {t.name: t for t in tools}
+        llm_with_tools = self.llm.bind_tools(tools)
 
-        # 1. Phát sự kiện sources đầu tiên
+        intent_messages = self._build_intent_messages(query, chat_history)
+
+        try:
+            first_step = await llm_with_tools.ainvoke(intent_messages)
+        except Exception as e:
+            yield {"type": "sources", "data": []}
+            yield {"type": "token", "content": f"Lỗi kết nối mô hình AI: {str(e)}"}
+            yield {"type": "done"}
+            return
+
+        # Nhánh A: Trả lời trực tiếp (Không có Tool Call)
+        if not first_step.tool_calls:
+            yield {"type": "sources", "data": []}
+            direct_answer = self._extract_text(first_step.content)
+            if direct_answer:
+                yield {"type": "token", "content": direct_answer}
+            yield {"type": "done"}
+            return
+
+        # Nhánh B: Thực thi Tool tra cứu tài liệu
+        obs = ""
+        for tc in first_step.tool_calls:
+            t_name = tc["name"]
+            t_args = tc.get("args", {})
+            if t_name in tool_map:
+                if t_name == "search_knowledge_base" and "document_ids" not in t_args and document_ids:
+                    t_args["document_ids"] = [str(d) for d in document_ids]
+                obs = await tool_map[t_name].ainvoke(t_args)
+
+        # 1. Bắn danh sách sources về UI ngay lập tức
+        sources = tool_service.retrieved_sources
         yield {"type": "sources", "data": sources}
 
-        if not context_text or not sources:
+        if not sources or not obs:
             no_info_msg = (
                 "Không tìm thấy thông tin phù hợp trong tài liệu đã tải lên để trả lời câu hỏi của bạn. "
                 "Hệ thống tuân thủ nguyên tắc không đưa ra câu trả lời thiếu căn cứ."
@@ -323,14 +237,15 @@ class RAGService:
             yield {"type": "done"}
             return
 
+        # 2. Stream từng token của câu trả lời tổng hợp
+        prompt = self._build_rag_prompt(query, obs, chat_history=chat_history)
         try:
             async for chunk in self.llm.astream(prompt):
                 token_text = self._extract_text(chunk.content)
                 if token_text:
                     yield {"type": "token", "content": token_text}
         except Exception as e:
-            fallback_msg = f"Lỗi kết nối tới mô hình AI: {str(e)}"
+            fallback_msg = f"Lỗi trong quá trình sinh câu trả lời: {str(e)}"
             yield {"type": "token", "content": fallback_msg}
 
         yield {"type": "done"}
-
