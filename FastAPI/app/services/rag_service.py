@@ -8,6 +8,7 @@ from sqlalchemy import select
 warnings.filterwarnings("ignore", message=".*automatic function calling.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*Automatic function calling.*", category=UserWarning)
 
+from langchain_google_genai import ChatGoogleGenerativeAI
 from app.models.document import Document
 from app.services.vector_store import VectorStore
 from app.core.config import settings
@@ -26,8 +27,8 @@ class RAGResult:
 
 class RAGService:
     """
-    RAG Service độc lập:
-    - Triển khai toàn bộ quy trình: Vector Embedding -> FAISS Retrieval -> Threshold Filtering -> LLM Generation.
+    RAG Service độc lập chuẩn 100% LangChain:
+    - Triển khai toàn bộ quy trình: Vector Embedding -> FAISS Retrieval -> Threshold Filtering -> LLM Generation (ChatGoogleGenerativeAI).
     - Xử lý triệt để bài toán chống Hallucination (tự động thông báo khi tài liệu không có thông tin phù hợp).
     - Cung cấp nguồn trích dẫn cụ thể (tên tài liệu, trang, snippet, điểm tương đồng).
     """
@@ -35,6 +36,26 @@ class RAGService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.vector_store = VectorStore()
+        self.llm = ChatGoogleGenerativeAI(
+            model=settings.LLM_MODEL,
+            google_api_key=settings.GEMINI_API_KEY,
+            temperature=0.0,
+        )
+
+    @staticmethod
+    def _extract_text(content) -> str:
+        """Trích xuất chuỗi văn bản an toàn từ LangChain Message Content (hỗ trợ cả str và list[dict])."""
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and "text" in item:
+                    parts.append(item["text"])
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "".join(parts)
+        return str(content or "")
 
     async def retrieve_context(
         self,
@@ -115,7 +136,7 @@ class RAGService:
             return [], ""
 
         context_text = "\n\n".join(context_blocks)
-                # In kiểm tra:
+        # In kiểm tra:
         print("\n" + "="*30 + " KẾT QUẢ RETRIEVE " + "="*30)
         for i, (source, block) in enumerate(zip(sources, context_blocks)):
             print(f"\n--- [Trích đoạn {i+1}] ---")
@@ -123,7 +144,6 @@ class RAGService:
             print("CONTEXT NỘI DUNG:\n", block)
         print("="*80 + "\n")
 
-        context_text = "\n\n".join(context_blocks)
         return sources, context_text
 
     def build_prompt(
@@ -163,7 +183,6 @@ class RAGService:
             f"Câu hỏi của người dùng: {query}"
         )
 
-
     async def generate_answer(
         self,
         query: str,
@@ -172,7 +191,7 @@ class RAGService:
         chat_history: Optional[list[dict]] = None
     ) -> RAGResult:
         """
-        Giai đoạn 2: Generation (Sinh phản hồi qua Google Gemini API với cơ chế tự động thử đa mô hình)
+        Giai đoạn 2: Generation (Sinh phản hồi qua LangChain ChatGoogleGenerativeAI)
         """
         if not context_text or not sources:
             return RAGResult(
@@ -186,72 +205,28 @@ class RAGService:
 
         prompt = self.build_prompt(query, context_text, chat_history=chat_history)
         print("===================================")
-        print("context gửi lên LLM bao gồm cả system prompt + lịch sử chat chứ không riêng chunk lấy ra được".capitalize(),prompt)
+        print("context gửi lên LLM bao gồm cả system prompt + lịch sử chat chứ không riêng chunk lấy ra được".capitalize(), prompt)
         print("===================================")
-        is_real_gemini_key = (
-            settings.GEMINI_API_KEY 
-            and "your_gemini_api" not in settings.GEMINI_API_KEY.lower()
-        )
 
         ai_content = ""
         prompt_tokens = None
         completion_tokens = None
         total_tokens = None
-        used_model = settings.LLM_MODEL
 
-        if is_real_gemini_key:
-            from google import genai
-            from google.genai import types
-
-            client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            gen_config = types.GenerateContentConfig(
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-            )
-            models_to_try = [
-                settings.LLM_MODEL,
-                "gemini-3.7-flash",
-                "gemini-3.8-flash",
-                "gemini-3.5-flash",
-                "gemini-flash-latest",
-            ]
-            seen = set()
-            ordered_models = [m for m in models_to_try if not (m in seen or seen.add(m))]
-
-            last_error = None
-            for m in ordered_models:
-                try:
-                    response = await client.aio.models.generate_content(
-                        model=m,
-                        contents=prompt,
-                        config=gen_config,
-                    )
-                    if response and response.text:
-                        ai_content = response.text
-                        used_model = m
-                        if hasattr(response, "usage_metadata") and response.usage_metadata:
-                            prompt_tokens = getattr(response.usage_metadata, "prompt_token_count", None)
-                            completion_tokens = getattr(response.usage_metadata, "candidates_token_count", None)
-                            total_tokens = getattr(response.usage_metadata, "total_token_count", None)
-                        last_error = None
-                        break
-                except Exception as e:
-                    last_error = e
-
-            if not ai_content and last_error:
-                ai_content = f"Lỗi kết nối tới mô hình AI ({used_model}): {str(last_error)}"
-        else:
-            top_source = sources[0]
-            ai_content = (
-                f"Dựa trên tài liệu '{top_source['document_name']}' (Trang {top_source['page']}):\n\n"
-                f"\"{top_source['snippet']}\"\n\n"
-                f"[Lưu ý: Để kích hoạt khả năng tổng hợp và suy luận trực tiếp từ Google Gemini ({settings.LLM_MODEL}), "
-                f"vui lòng điền GEMINI_API_KEY hợp lệ vào file .env]."
-            )
+        try:
+            response = await self.llm.ainvoke(prompt)
+            ai_content = self._extract_text(response.content)
+            if hasattr(response, "usage_metadata") and response.usage_metadata:
+                prompt_tokens = response.usage_metadata.get("input_tokens")
+                completion_tokens = response.usage_metadata.get("output_tokens")
+                total_tokens = response.usage_metadata.get("total_tokens")
+        except Exception as e:
+            ai_content = f"Lỗi kết nối tới mô hình AI ({settings.LLM_MODEL}): {str(e)}"
 
         return RAGResult(
             answer=ai_content,
             sources=sources,
-            model_name=used_model,
+            model_name=settings.LLM_MODEL,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -323,10 +298,10 @@ class RAGService:
         chat_history: Optional[list[dict]] = None,
     ):
         """
-        Luồng sinh phản hồi dạng Python Generator (không phụ thuộc vào format truyền mạng):
+        Luồng sinh phản hồi dạng Python Generator qua LangChain astream:
         1. Retrieval qua FAISS.
         2. Phát event `{'type': 'sources', 'data': sources}`.
-        3. Phát từng event `{'type': 'token', 'content': chunk.text}`.
+        3. Phát từng event `{'type': 'token', 'content': chunk}` theo thời gian thực.
         4. Phát event `{'type': 'done'}` báo hiệu kết thúc.
         """
         sources, context_text, prompt = await self._prepare_rag_context(
@@ -348,57 +323,14 @@ class RAGService:
             yield {"type": "done"}
             return
 
-        is_real_gemini_key = (
-            settings.GEMINI_API_KEY 
-            and "your_gemini_api" not in settings.GEMINI_API_KEY.lower()
-        )
-
-        if is_real_gemini_key:
-            from google import genai
-            from google.genai import types
-
-            client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            gen_config = types.GenerateContentConfig(
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-            )
-            models_to_try = [
-                settings.LLM_MODEL,
-                "gemini-flash-lite-latest",
-                "gemini-3.6-flash",
-            ]
-            seen = set()
-            ordered_models = [m for m in models_to_try if not (m in seen or seen.add(m))]
-
-            stream_success = False
-            last_err = None
-
-            for m in ordered_models:
-                try:
-                    response_stream = await client.aio.models.generate_content_stream(
-                        model=m,
-                        contents=prompt,
-                        config=gen_config,
-                    )
-                    async for chunk in response_stream:
-                        if chunk and hasattr(chunk, "text") and chunk.text:
-                            yield {"type": "token", "content": chunk.text}
-                    stream_success = True
-                    break
-                except Exception as e:
-                    last_err = e
-                    continue
-
-            if not stream_success:
-                fallback_msg = f"Lỗi kết nối tới mô hình AI: {str(last_err)}"
-                yield {"type": "token", "content": fallback_msg}
-        else:
-            top_source = sources[0]
-            simulated_text = (
-                f"Dựa trên tài liệu '{top_source['document_name']}' (Trang {top_source['page']}):\n\n"
-                f"\"{top_source['snippet']}\""
-            )
-            words = simulated_text.split(" ")
-            for w in words:
-                yield {"type": "token", "content": w + ' '}
+        try:
+            async for chunk in self.llm.astream(prompt):
+                token_text = self._extract_text(chunk.content)
+                if token_text:
+                    yield {"type": "token", "content": token_text}
+        except Exception as e:
+            fallback_msg = f"Lỗi kết nối tới mô hình AI: {str(e)}"
+            yield {"type": "token", "content": fallback_msg}
 
         yield {"type": "done"}
+

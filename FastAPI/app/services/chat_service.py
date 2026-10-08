@@ -138,46 +138,22 @@ class ChatService:
             order_by=ChatMessage.created_at.asc()
         )
 
-    async def send_message(
-        self,
-        session_id: uuid.UUID,
-        user_id: uuid.UUID,
-        content: str
-    ) -> tuple[ChatMessage, ChatMessage]:
+    async def _resolve_session_target_doc_ids(self, session: ChatSession) -> tuple[Optional[list[uuid.UUID]], list[Document]]:
         """
-        Gửi câu hỏi vào phiên chat và kích hoạt RAG:
-        1. Tìm kiếm context trên TẤT CẢ tài liệu đã gắn với phiên chat này.
-        2. Nếu phiên chat chưa có tài liệu gắn riêng, tìm kiếm trên kho tài liệu của user.
-        3. Gọi Google Gemini API để sinh câu trả lời kèm trích dẫn (sources).
+        Xác định danh sách document_ids mục tiêu cho phiên chat:
+        - Nếu phiên chat có cấu hình tài liệu riêng: chỉ tìm kiếm trên các tài liệu còn tồn tại (chưa xóa mềm).
+        - Nếu toàn bộ tài liệu cấu hình đã bị xóa mềm: trả về [] (không tìm kiếm).
+        - Nếu phiên chat không gán tài liệu nào: trả về None (tìm kiếm toàn bộ kho tài liệu của user).
         """
-        clean_content = content.strip()
-        if not clean_content:
-            raise EmptyMessageException("Nội dung tin nhắn không được để trống")
-
-        session = await self.get_session_by_id(session_id, user_id)
-
-        # 1. Lưu tin nhắn của người dùng
-        user_msg = ChatMessage(
-            session_id=session_id,
-            role="user",
-            content=clean_content
-        )
-        self.db.add(user_msg)
-
-        # 2. Cập nhật tiêu đề nếu vẫn để mặc định
-        if session.title == "Cuộc trò chuyện mới":
-            session.title = clean_content[:40] + ("..." if len(clean_content) > 40 else "")
-
-        # 3. Lấy tất cả document_ids thuộc phiên chat (chỉ lấy tài liệu chưa bị xóa)
-        session_docs = await self.get_session_documents(session_id)
+        session_docs = await self.get_session_documents(session.id)
         doc_ids = [d.id for d in session_docs]
+
         if session.document_id and session.document_id not in doc_ids:
             primary_doc = await self.doc_repo.find_by_id(session.document_id)
             if primary_doc and not primary_doc.is_deleted:
                 doc_ids.append(session.document_id)
 
-        # Kiểm tra xem phiên chat này có từng gắn với tài liệu riêng không
-        cfg_stmt = select(session_documents.c.document_id).where(session_documents.c.session_id == session_id)
+        cfg_stmt = select(session_documents.c.document_id).where(session_documents.c.session_id == session.id)
         cfg_res = await self.db.execute(cfg_stmt)
         configured_doc_ids = [r[0] for r in cfg_res.all()]
         if session.document_id and session.document_id not in configured_doc_ids:
@@ -185,23 +161,22 @@ class ChatService:
 
         is_doc_specific = len(configured_doc_ids) > 0
         target_doc_ids = doc_ids if doc_ids else ([] if is_doc_specific else None)
+        return target_doc_ids, session_docs
 
-        # 4. Kích hoạt RAG Service riêng biệt
-        recent_messages = await self.get_session_messages(session_id, user_id)
-        chat_history = [
-            {"role": m.role, "content": m.content}
-            for m in recent_messages if m.id != user_msg.id
-        ][-6:]
+    @staticmethod
+    def _truncate_title(text: str, max_len: int = 40) -> str:
+        """Tạo tiêu đề ngắn gọn từ câu hỏi của người dùng."""
+        cleaned = text.strip()
+        if len(cleaned) <= max_len:
+            return cleaned
+        return cleaned[:max_len] + "..."
 
-        rag_service = RAGService(self.db)
-        rag_result = await rag_service.query(
-            query=clean_content,
-            user_id=user_id,
-            document_ids=target_doc_ids,
-            chat_history=chat_history
-        )
-
-        # 5. Lưu tin nhắn phản hồi của Assistant
+    async def _create_and_persist_assistant_message(
+        self,
+        session_id: uuid.UUID,
+        rag_result,
+    ) -> ChatMessage:
+        """Tạo và lưu trữ phản hồi của AI Assistant vào Database."""
         assistant_msg = ChatMessage(
             session_id=session_id,
             role="assistant",
@@ -213,6 +188,79 @@ class ChatService:
             total_tokens=rag_result.total_tokens,
         )
         self.db.add(assistant_msg)
+        return assistant_msg
+
+    async def _prepare_chat_turn(
+        self,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str
+    ) -> tuple[ChatSession, ChatMessage, Optional[list[uuid.UUID]], list[dict], list[Document]]:
+        """
+        Hàm helper dùng chung cho cả send_message và send_message_stream:
+        1. Kiểm tra tính hợp lệ của tin nhắn.
+        2. Lưu tin nhắn của người dùng (user_msg) và cập nhật tiêu đề session nếu cần.
+        3. Xác định danh sách document_ids liên quan đến phiên chat.
+        4. Tải lịch sử tin nhắn gần nhất để làm ngữ cảnh đa lượt (Multi-turn Context).
+        """
+        clean_content = content.strip()
+        if not clean_content:
+            raise EmptyMessageException("Nội dung tin nhắn không được để trống")
+
+        session = await self.get_session_by_id(session_id, user_id)
+
+        # Lưu tin nhắn của người dùng
+        user_msg = ChatMessage(
+            session_id=session_id,
+            role="user",
+            content=clean_content
+        )
+        self.db.add(user_msg)
+
+        # Cập nhật tiêu đề nếu vẫn để mặc định
+        if session.title == "Cuộc trò chuyện mới":
+            session.title = self._truncate_title(clean_content)
+
+        # Xác định tài liệu mục tiêu
+        target_doc_ids, session_docs = await self._resolve_session_target_doc_ids(session)
+
+        # Lấy 6 tin nhắn gần nhất (trừ tin nhắn hiện tại vừa gửi)
+        recent_messages = await self.get_session_messages(session_id, user_id)
+        chat_history = [
+            {"role": m.role, "content": m.content}
+            for m in recent_messages if m.id != user_msg.id
+        ][-6:]
+
+        await self.db.commit()
+        return session, user_msg, target_doc_ids, chat_history, session_docs
+
+    async def send_message(
+        self,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str
+    ) -> tuple[ChatMessage, ChatMessage]:
+        """
+        Gửi câu hỏi vào phiên chat và kích hoạt RAG (chế độ Đồng bộ / JSON):
+        1. Chuẩn bị ngữ cảnh qua _prepare_chat_turn.
+        2. Kích hoạt RAGService.query để tìm kiếm và sinh câu trả lời.
+        3. Lưu tin nhắn phản hồi của Assistant vào DB.
+        """
+        session, user_msg, target_doc_ids, chat_history, session_docs = await self._prepare_chat_turn(
+            session_id=session_id,
+            user_id=user_id,
+            content=content
+        )
+
+        rag_service = RAGService(self.db)
+        rag_result = await rag_service.query(
+            query=user_msg.content,
+            user_id=user_id,
+            document_ids=target_doc_ids,
+            chat_history=chat_history
+        )
+
+        assistant_msg = await self._create_and_persist_assistant_message(session_id, rag_result)
 
         await self.db.commit()
         await self.db.refresh(user_msg)
@@ -241,11 +289,12 @@ class ChatService:
         batch_result = await doc_service.upload_multiple_documents(files=files, user_id=user_id)
         uploaded_docs = batch_result.get("uploaded", [])
 
-        # Xác định tiêu đề mặc định
+        clean_content = content.strip() if content else None
+
         session_title = title
         if not session_title:
-            if content and content.strip():
-                session_title = content.strip()[:40] + ("..." if len(content.strip()) > 40 else "")
+            if clean_content:
+                session_title = self._truncate_title(clean_content)
             elif uploaded_docs:
                 session_title = f"Hỏi đáp: {uploaded_docs[0].filename}"
             else:
@@ -260,7 +309,6 @@ class ChatService:
         self.db.add(session)
         await self.db.flush()
 
-        # Liên kết tất cả tài liệu vào session_documents
         doc_ids = [d.id for d in uploaded_docs]
         if doc_ids:
             await self.link_documents_to_session(session.id, doc_ids)
@@ -268,7 +316,6 @@ class ChatService:
         user_msg: Optional[ChatMessage] = None
         assistant_msg: Optional[ChatMessage] = None
 
-        clean_content = content.strip() if content else None
         user_attached_sources = [
             {
                 "id": str(d.id),
@@ -288,24 +335,14 @@ class ChatService:
             )
             self.db.add(user_msg)
 
-            rag_service = RAGService(self.db)
-            rag_result = await rag_service.query(
-                query=clean_content,
-                user_id=user_id,
-                document_ids=doc_ids if doc_ids else None
-            )
-
-            assistant_msg = ChatMessage(
-                session_id=session.id,
-                role="assistant",
-                content=rag_result.answer,
-                sources=rag_result.sources,
-                model_name=rag_result.model_name,
-                prompt_tokens=rag_result.prompt_tokens,
-                completion_tokens=rag_result.completion_tokens,
-                total_tokens=rag_result.total_tokens,
-            )
-            self.db.add(assistant_msg)
+            if clean_content:
+                rag_service = RAGService(self.db)
+                rag_result = await rag_service.query(
+                    query=clean_content,
+                    user_id=user_id,
+                    document_ids=doc_ids if doc_ids else None
+                )
+                assistant_msg = await self._create_and_persist_assistant_message(session.id, rag_result)
 
         await self.db.commit()
         await self.db.refresh(session)
@@ -338,7 +375,6 @@ class ChatService:
         batch_result = await doc_service.upload_multiple_documents(files=files, user_id=user_id)
         newly_uploaded = batch_result.get("uploaded", [])
 
-        # Thêm các tài liệu mới vào session_documents
         new_doc_ids = [d.id for d in newly_uploaded]
         if new_doc_ids:
             await self.link_documents_to_session(session.id, new_doc_ids)
@@ -369,31 +405,21 @@ class ChatService:
             )
             self.db.add(user_msg)
 
-            recent_messages = await self.get_session_messages(session.id, user_id)
-            chat_history = [
-                {"role": m.role, "content": m.content}
-                for m in recent_messages if m.id != user_msg.id
-            ][-6:]
+            if clean_content:
+                recent_messages = await self.get_session_messages(session.id, user_id)
+                chat_history = [
+                    {"role": m.role, "content": m.content}
+                    for m in recent_messages if m.id != user_msg.id
+                ][-6:]
 
-            rag_service = RAGService(self.db)
-            rag_result = await rag_service.query(
-                query=clean_content,
-                user_id=user_id,
-                document_ids=all_doc_ids if all_doc_ids else None,
-                chat_history=chat_history
-            )
-
-            assistant_msg = ChatMessage(
-                session_id=session.id,
-                role="assistant",
-                content=rag_result.answer,
-                sources=rag_result.sources,
-                model_name=rag_result.model_name,
-                prompt_tokens=rag_result.prompt_tokens,
-                completion_tokens=rag_result.completion_tokens,
-                total_tokens=rag_result.total_tokens,
-            )
-            self.db.add(assistant_msg)
+                rag_service = RAGService(self.db)
+                rag_result = await rag_service.query(
+                    query=clean_content,
+                    user_id=user_id,
+                    document_ids=all_doc_ids if all_doc_ids else None,
+                    chat_history=chat_history
+                )
+                assistant_msg = await self._create_and_persist_assistant_message(session.id, rag_result)
 
         await self.db.commit()
         await self.db.refresh(session)
@@ -412,82 +438,52 @@ class ChatService:
         content: str
     ):
         """
-        Gửi câu hỏi và stream phản hồi từ AI về Client:
-        - 1. Lưu tin nhắn người dùng.
-        - 2. Kích hoạt luồng Stream từ RAGService và đẩy từng event về Client.
-        - 3. Lưu câu trả lời hoàn chỉnh của Assistant và trích dẫn vào PostgreSQL khi stream kết thúc.
+        Gửi câu hỏi và stream phản hồi từ AI về Client qua SSE:
+        1. Chuẩn bị ngữ cảnh qua _prepare_chat_turn.
+        2. Kích hoạt luồng Stream từ RAGService và đẩy từng event về Client.
+        3. Bắt lỗi ngoại lệ và gửi event lỗi nếu có.
+        4. Lưu câu trả lời hoàn chỉnh của Assistant và trích dẫn vào PostgreSQL khi stream kết thúc.
         """
-        clean_content = content.strip()
-        if not clean_content:
-            raise EmptyMessageException("Nội dung tin nhắn không được để trống")
-
-        session = await self.get_session_by_id(session_id, user_id)
-
-        # 1. Lưu tin nhắn người dùng
-        user_msg = ChatMessage(
+        session, user_msg, target_doc_ids, chat_history, _ = await self._prepare_chat_turn(
             session_id=session_id,
-            role="user",
-            content=clean_content
+            user_id=user_id,
+            content=content
         )
-        self.db.add(user_msg)
-        if session.title == "Cuộc trò chuyện mới":
-            session.title = clean_content[:40] + ("..." if len(clean_content) > 40 else "")
 
-        session_docs = await self.get_session_documents(session_id)
-        doc_ids = [d.id for d in session_docs]
-        if session.document_id and session.document_id not in doc_ids:
-            primary_doc = await self.doc_repo.find_by_id(session.document_id)
-            if primary_doc and not primary_doc.is_deleted:
-                doc_ids.append(session.document_id)
-
-        cfg_stmt = select(session_documents.c.document_id).where(session_documents.c.session_id == session_id)
-        cfg_res = await self.db.execute(cfg_stmt)
-        configured_doc_ids = [r[0] for r in cfg_res.all()]
-        if session.document_id and session.document_id not in configured_doc_ids:
-            configured_doc_ids.append(session.document_id)
-
-        is_doc_specific = len(configured_doc_ids) > 0
-        target_doc_ids = doc_ids if doc_ids else ([] if is_doc_specific else None)
-
-        recent_messages = await self.get_session_messages(session_id, user_id)
-        chat_history = [
-            {"role": m.role, "content": m.content}
-            for m in recent_messages if m.id != user_msg.id
-        ][-6:]
-
-        await self.db.commit()
-
-        # 2. Khởi chạy luồng RAG Stream
         rag_service = RAGService(self.db)
         full_tokens = []
         collected_sources = []
 
-        async for event_obj in rag_service.stream_query(
-            query=clean_content,
-            user_id=user_id,
-            document_ids=target_doc_ids,
-            chat_history=chat_history
-        ):
-            event_type = event_obj.get("type")
+        try:
+            async for event_obj in rag_service.stream_query(
+                query=user_msg.content,
+                user_id=user_id,
+                document_ids=target_doc_ids,
+                chat_history=chat_history
+            ):
+                event_type = event_obj.get("type")
 
-            if event_type == "sources":
-                collected_sources = event_obj.get("data", [])
-                yield f"event: sources\ndata: {json.dumps(collected_sources)}\n\n"
+                if event_type == "sources":
+                    collected_sources = event_obj.get("data", [])
+                    yield f"event: sources\ndata: {json.dumps(collected_sources)}\n\n"
 
-            elif event_type == "token":
-                token_text = event_obj.get("content", "")
-                full_tokens.append(token_text)
-                yield f"event: token\ndata: {json.dumps({'text': token_text})}\n\n"
-                
-            elif event_type == "done":
-                yield f"event: done\ndata: [DONE]\n\n"
+                elif event_type == "token":
+                    token_text = event_obj.get("content", "")
+                    full_tokens.append(token_text)
+                    yield f"event: token\ndata: {json.dumps({'text': token_text})}\n\n"
+                    
+                elif event_type == "done":
+                    yield f"event: done\ndata: [DONE]\n\n"
+        except Exception as e:
+            error_msg = f"Đã xảy ra lỗi trong quá trình xử lý: {str(e)}"
+            yield f"event: token\ndata: {json.dumps({'text': error_msg})}\n\n"
+            yield f"event: done\ndata: [DONE]\n\n"
+            full_tokens.append(error_msg)
 
-        # 3. Lưu câu trả lời hoàn chỉnh của AI vào DB
+        # Lưu câu trả lời hoàn chỉnh của AI vào DB độc lập (AsyncSessionLocal)
         full_answer = "".join(full_tokens).strip()
         if full_answer:
             try:
-                # Sử dụng AsyncSessionLocal để đảm bảo session độc lập,
-                # tránh bị ảnh hưởng khi stream connection kết thúc
                 async with AsyncSessionLocal() as persist_db:
                     assistant_msg = ChatMessage(
                         session_id=session_id,
