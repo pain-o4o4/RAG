@@ -35,66 +35,7 @@ class VectorStore:
     def _get_faiss_path(self, index_name: str) -> str:
         return os.path.join(self.vector_dir, f"{index_name}.faiss")
 
-    def _migrate_old_index_if_needed(self, index_name: str) -> Optional[FAISS]:
-        """Tự động chuyển đổi dữ liệu từ định dạng FAISS cũ (.index + _meta.json) sang LangChain FAISS."""
-        old_index_file = os.path.join(self.vector_dir, f"{index_name}.index")
-        old_meta_file = os.path.join(self.vector_dir, f"{index_name}_meta.json")
 
-        if not (os.path.exists(old_index_file) and os.path.exists(old_meta_file)):
-            return None
-
-        try:
-            import faiss
-            from langchain_community.docstore.in_memory import InMemoryDocstore
-
-            print(f"[VectorStore] Auto-migrating old index for user: {index_name}...")
-            index = faiss.read_index(old_index_file)
-            with open(old_meta_file, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-
-            docstore = InMemoryDocstore({})
-            index_to_docstore_id = {}
-
-            for i, m in enumerate(meta):
-                doc_id = str(i)
-                d = LangchainDocument(
-                    page_content=m.get("content", ""),
-                    metadata={
-                        "document_id": str(m.get("document_id", "")),
-                        "chunk_index": m.get("chunk_index", i),
-                        "page_number": m.get("metadata", {}).get("page_number", 1)
-                    }
-                )
-                docstore.add({doc_id: d})
-                index_to_docstore_id[i] = doc_id
-
-            test_d = len(self.embeddings.embed_query("test"))
-            if index.d != test_d:
-                print(f"[VectorStore] Old index d ({index.d}) != embedding d ({test_d}). Re-embedding docs...")
-                docs = [
-                    LangchainDocument(
-                        page_content=m.get("content", ""),
-                        metadata={
-                            "document_id": str(m.get("document_id", "")),
-                            "chunk_index": m.get("chunk_index", i),
-                            "page_number": m.get("metadata", {}).get("page_number", 1)
-                        }
-                    ) for i, m in enumerate(meta)
-                ]
-                vectorstore = FAISS.from_documents(docs, self.embeddings)
-            else:
-                vectorstore = FAISS(
-                    embedding_function=self.embeddings,
-                    index=index,
-                    docstore=docstore,
-                    index_to_docstore_id=index_to_docstore_id
-                )
-            vectorstore.save_local(self.vector_dir, index_name=index_name)
-            print(f"[VectorStore] Successfully migrated {len(meta)} chunks to LangChain FAISS!")
-            return vectorstore
-        except Exception as e:
-            print(f"[VectorStore] Migration failed: {e}")
-            return None
 
     def add_documents(
         self,
@@ -104,9 +45,7 @@ class VectorStore:
         index_name = self._get_index_name(user_id)
         faiss_path = self._get_faiss_path(index_name)
 
-        if not os.path.exists(faiss_path):
-            # Thử migrate nếu có file cũ
-            self._migrate_old_index_if_needed(index_name)
+
 
         if os.path.exists(faiss_path):
             try:
@@ -193,8 +132,7 @@ class VectorStore:
             except Exception as e:
                 print(f"[VectorStore] Error loading FAISS: {e}")
 
-        if not vectorstore:
-            vectorstore = self._migrate_old_index_if_needed(index_name)
+
 
         if not vectorstore:
             return []

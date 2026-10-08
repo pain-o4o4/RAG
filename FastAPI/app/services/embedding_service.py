@@ -84,3 +84,4 @@ class GeminiEmbeddings(GoogleGenerativeAIEmbeddings):
 
 # Alias tương thích ngược
 GeminiEmbeddings768 = GeminiEmbeddings
+

@@ -126,7 +126,12 @@ class RAGService:
         context_text = "\n\n".join(context_blocks)
         return sources, context_text
 
-    def build_prompt(self, query: str, context_text: str, chat_history: Optional[list[dict]] = None) -> str:
+    def build_prompt(
+        self,
+        query: str,
+        context_text: str,
+        chat_history: Optional[list[dict]] = None
+    ) -> str:
         history_text = ""
         if chat_history:
             formatted_turns = []
@@ -252,14 +257,14 @@ class RAGService:
             total_tokens=total_tokens,
         )
 
-    async def query(
+    async def _prepare_rag_context(
         self,
         query: str,
         user_id: uuid.UUID,
         document_ids: Optional[list[uuid.UUID]] = None,
         chat_history: Optional[list[dict]] = None,
-    ) -> RAGResult:
-        """Hàm chính điều phối toàn bộ quy trình RAG: Retrieval qua FAISS -> Generation qua Gemini."""
+    ) -> tuple[list[dict], str, str]:
+        """Gom nhóm logic Retrieval và Build Prompt dùng chung cho cả query và stream_query."""
         sources, context_text = await self.retrieve_context(
             query=query,
             user_id=user_id,
@@ -279,6 +284,30 @@ class RAGService:
                 if aug_sources:
                     sources, context_text = aug_sources, aug_context
 
+        prompt = ""
+        if context_text and sources:
+            prompt = self.build_prompt(query, context_text, chat_history=chat_history)
+            print("==================================================")
+            print("context gửi lên LLM bao gồm cả system prompt + lịch sử chat chứ không riêng chunk lấy ra được \n".upper(), prompt)
+            print("==================================================")
+
+        return sources, context_text, prompt
+
+    async def query(
+        self,
+        query: str,
+        user_id: uuid.UUID,
+        document_ids: Optional[list[uuid.UUID]] = None,
+        chat_history: Optional[list[dict]] = None,
+    ) -> RAGResult:
+        """Hàm chính điều phối toàn bộ quy trình RAG: Retrieval qua FAISS -> Generation qua Gemini."""
+        sources, context_text, prompt = await self._prepare_rag_context(
+            query=query,
+            user_id=user_id,
+            document_ids=document_ids,
+            chat_history=chat_history
+        )
+
         return await self.generate_answer(
             query=query,
             context_text=context_text,
@@ -294,50 +323,31 @@ class RAGService:
         chat_history: Optional[list[dict]] = None,
     ):
         """
-        Luồng sinh phản hồi dạng Server-Sent Events (SSE) theo thời gian thực:
-        1. Retrieval qua FAISS (kèm bộ lọc threshold và document_ids).
-        2. Phát sự kiện `sources` chứa danh sách trích dẫn.
-        3. Phát từng sự kiện `token` khi Gemini sinh từng từ (streaming typewriter).
-        4. Phát sự kiện `done` báo hiệu kết thúc.
+        Luồng sinh phản hồi dạng Python Generator (không phụ thuộc vào format truyền mạng):
+        1. Retrieval qua FAISS.
+        2. Phát event `{'type': 'sources', 'data': sources}`.
+        3. Phát từng event `{'type': 'token', 'content': chunk.text}`.
+        4. Phát event `{'type': 'done'}` báo hiệu kết thúc.
         """
-        import json
-
-        sources, context_text = await self.retrieve_context(
+        sources, context_text, prompt = await self._prepare_rag_context(
             query=query,
             user_id=user_id,
             document_ids=document_ids,
+            chat_history=chat_history
         )
 
-        # Nếu chưa tìm thấy kết quả và có lịch sử hội thoại, thử kết hợp với câu hỏi trước
-        if (not sources or len(sources) == 0) and chat_history:
-            prev_user_queries = [m["content"] for m in chat_history if m.get("role") == "user"]
-            if prev_user_queries:
-                augmented_query = f"{prev_user_queries[-1]} {query}"
-                aug_sources, aug_context = await self.retrieve_context(
-                    query=augmented_query,
-                    user_id=user_id,
-                    document_ids=document_ids,
-                )
-                if aug_sources:
-                    sources, context_text = aug_sources, aug_context
-
         # 1. Phát sự kiện sources đầu tiên
-        yield f"event: sources\ndata: {json.dumps(sources)}\n\n"
+        yield {"type": "sources", "data": sources}
 
         if not context_text or not sources:
             no_info_msg = (
                 "Không tìm thấy thông tin phù hợp trong tài liệu đã tải lên để trả lời câu hỏi của bạn. "
                 "Hệ thống tuân thủ nguyên tắc không đưa ra câu trả lời thiếu căn cứ."
             )
-            yield f"event: token\ndata: {json.dumps({'text': no_info_msg})}\n\n"
-            yield f"event: done\ndata: [DONE]\n\n"
+            yield {"type": "token", "content": no_info_msg}
+            yield {"type": "done"}
             return
 
-        # 2. Xây dựng prompt
-        prompt = self.build_prompt(query, context_text, chat_history=chat_history)
-        print("==================================================")
-        print("context gửi lên LLM bao gồm cả system prompt + lịch sử chat chứ không riêng chunk lấy ra được \n".upper(), prompt)
-        print("==================================================")
         is_real_gemini_key = (
             settings.GEMINI_API_KEY 
             and "your_gemini_api" not in settings.GEMINI_API_KEY.lower()
@@ -371,7 +381,7 @@ class RAGService:
                     )
                     async for chunk in response_stream:
                         if chunk and hasattr(chunk, "text") and chunk.text:
-                            yield f"event: token\ndata: {json.dumps({'text': chunk.text})}\n\n"
+                            yield {"type": "token", "content": chunk.text}
                     stream_success = True
                     break
                 except Exception as e:
@@ -380,7 +390,7 @@ class RAGService:
 
             if not stream_success:
                 fallback_msg = f"Lỗi kết nối tới mô hình AI: {str(last_err)}"
-                yield f"event: token\ndata: {json.dumps({'text': fallback_msg})}\n\n"
+                yield {"type": "token", "content": fallback_msg}
         else:
             top_source = sources[0]
             simulated_text = (
@@ -389,6 +399,6 @@ class RAGService:
             )
             words = simulated_text.split(" ")
             for w in words:
-                yield f"event: token\ndata: {json.dumps({'text': w + ' '})}\n\n"
+                yield {"type": "token", "content": w + ' '}
 
-        yield f"event: done\ndata: [DONE]\n\n"
+        yield {"type": "done"}

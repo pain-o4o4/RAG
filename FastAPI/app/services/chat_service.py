@@ -462,29 +462,25 @@ class ChatService:
         full_tokens = []
         collected_sources = []
 
-        async for sse_event in rag_service.stream_query(
+        async for event_obj in rag_service.stream_query(
             query=clean_content,
             user_id=user_id,
             document_ids=target_doc_ids,
             chat_history=chat_history
         ):
-            yield sse_event
+            event_type = event_obj.get("type")
 
-            # Bóc tách dữ liệu để chuẩn bị lưu trữ vào DB
-            for line in sse_event.split("\n"):
-                line = line.strip()
-                if line.startswith("data:"):
-                    raw_data = line[5:].strip()
-                    if raw_data == "[DONE]":
-                        continue
-                    try:
-                        parsed = json.loads(raw_data)
-                        if isinstance(parsed, list):
-                            collected_sources = parsed
-                        elif isinstance(parsed, dict) and "text" in parsed:
-                            full_tokens.append(parsed["text"])
-                    except Exception:
-                        pass
+            if event_type == "sources":
+                collected_sources = event_obj.get("data", [])
+                yield f"event: sources\ndata: {json.dumps(collected_sources)}\n\n"
+
+            elif event_type == "token":
+                token_text = event_obj.get("content", "")
+                full_tokens.append(token_text)
+                yield f"event: token\ndata: {json.dumps({'text': token_text})}\n\n"
+                
+            elif event_type == "done":
+                yield f"event: done\ndata: [DONE]\n\n"
 
         # 3. Lưu câu trả lời hoàn chỉnh của AI vào DB
         full_answer = "".join(full_tokens).strip()
