@@ -213,6 +213,7 @@ async def send_message(
         session_id=id,
         user_id=current_user.id,
         content=payload.content,
+        enable_web_search=payload.enable_web_search,
     )
     return SendMessageResponse(
         user_message=ChatMessageResponse.model_validate(user_msg),
@@ -246,6 +247,7 @@ async def send_message_stream(
             session_id=id,
             user_id=current_user.id,
             content=payload.content,
+            enable_web_search=payload.enable_web_search,
         ),
         media_type="text/event-stream",
         headers={

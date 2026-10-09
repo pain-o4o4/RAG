@@ -21,6 +21,12 @@ from app.schemas.chat import (
     DeleteSessionResponse,
 )
 
+from app.schemas.tool import (
+    KnowledgeSearchInput,
+    ListUserDocumentsInput,
+    WebSearchInput,
+)
+
 __all__ = [
     "RegisterRequest",
     "LoginRequest",
@@ -38,4 +44,7 @@ __all__ = [
     "ChatMessageResponse",
     "SendMessageResponse",
     "DeleteSessionResponse",
+    "KnowledgeSearchInput",
+    "ListUserDocumentsInput",
+    "WebSearchInput",
 ]

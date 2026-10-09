@@ -1,7 +1,15 @@
 import sys
+import logging
+import warnings
 from pathlib import Path
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+
+# Tắt cảnh báo AFC nội bộ từ google-genai
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+logging.getLogger("google_genai").setLevel(logging.ERROR)
+logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 
 # Đảm bảo thư mục gốc dự án luôn nằm trong sys.path
 _root_dir = str(Path(__file__).resolve().parent.parent)

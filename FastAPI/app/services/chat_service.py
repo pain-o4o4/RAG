@@ -238,7 +238,8 @@ class ChatService:
         self,
         session_id: uuid.UUID,
         user_id: uuid.UUID,
-        content: str
+        content: str,
+        enable_web_search: bool = False,
     ) -> tuple[ChatMessage, ChatMessage]:
         """
         Gửi câu hỏi vào phiên chat và kích hoạt RAG (chế độ Đồng bộ / JSON):
@@ -257,7 +258,8 @@ class ChatService:
             query=user_msg.content,
             user_id=user_id,
             document_ids=target_doc_ids,
-            chat_history=chat_history
+            chat_history=chat_history,
+            enable_web_search=enable_web_search,
         )
 
         assistant_msg = await self._create_and_persist_assistant_message(session_id, rag_result)
@@ -435,7 +437,8 @@ class ChatService:
         self,
         session_id: uuid.UUID,
         user_id: uuid.UUID,
-        content: str
+        content: str,
+        enable_web_search: bool = False,
     ):
         """
         Gửi câu hỏi và stream phản hồi từ AI về Client qua SSE:
@@ -459,7 +462,8 @@ class ChatService:
                 query=user_msg.content,
                 user_id=user_id,
                 document_ids=target_doc_ids,
-                chat_history=chat_history
+                chat_history=chat_history,
+                enable_web_search=enable_web_search,
             ):
                 event_type = event_obj.get("type")
 

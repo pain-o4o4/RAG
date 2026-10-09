@@ -42,6 +42,10 @@ class ChatSessionResponse(BaseModel):
 # 4. DTO gửi tin nhắn vào phiên chat
 class SendMessageRequest(BaseModel):
     content: str = Field(..., min_length=1, description="Nội dung câu hỏi của người dùng")
+    enable_web_search: bool = Field(
+        default=False,
+        description="Bật/Tắt tìm kiếm mở rộng trên Web khi tài liệu nội bộ không có thông tin."
+    )
 
 
 # 5. DTO chi tiết một tin nhắn

@@ -171,12 +171,11 @@ class VectorStore:
                 filter=filter_func if target_doc_ids else None
             )
             results = [(doc, 1.0 / (1.0 + max(0.0, float(score)))) for doc, score in raw_results]
-        print("SCORE")
         for i, (doc, score) in enumerate(results, 1):
-            print(f"[{i}] Điểm tương đồng (0.0 - 1.0): {score:.4f}")
-        print ("chunk lấy ra số lượng k search = " , search_k)
+            print(f"[{i}] score similarity: {float(score):.4f}")
+        print("=============================================================")
         for i, result in enumerate(results, 1):
-            print(f"[VectorStore] Result {i}: {result}")
+            print(f"FAISS RAW: {result}")
         matched_results = []
         for doc, score in results:
             float_score = float(score)
@@ -193,9 +192,7 @@ class VectorStore:
 
             if len(matched_results) >= top_k:
                 break
-  
 
-        print("CHUNK SAU KHI LỌC với số lượng top_k = so sánh với similarity_threshold" , top_k)
-        for i, matched_result in enumerate(matched_results, 1):
-            print(f"[VectorStore] Matched result {i}: {matched_result}")
+        for i, matched in enumerate(matched_results, 1):
+            print(matched)
         return matched_results

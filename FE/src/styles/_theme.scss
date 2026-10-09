@@ -944,6 +944,31 @@ i.fas.fa-brain.brand-icon {
                         border-color: $border-accent;
                         color: $text-primary;
                     }
+
+                    &.web-chip {
+                        text-decoration: none;
+                        background: rgba(34, 211, 238, 0.08);
+                        border-color: rgba(34, 211, 238, 0.25);
+                        color: #e4e4e7;
+
+                        .text-cyan {
+                            color: $accent-cyan;
+                        }
+
+                        .source-link-icon {
+                            font-size: 0.65rem;
+                            color: $accent-cyan;
+                            opacity: 0.8;
+                        }
+
+                        &:hover {
+                            background: rgba(34, 211, 238, 0.16);
+                            border-color: $accent-cyan;
+                            color: #ffffff;
+                            transform: translateY(-1px);
+                            box-shadow: 0 2px 8px rgba(34, 211, 238, 0.2);
+                        }
+                    }
                 }
             }
         }
@@ -1105,29 +1130,177 @@ i.fas.fa-brain.brand-icon {
         align-items: center;
         gap: 10px;
 
-        .btn-attach-action {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: transparent;
-            border: none;
-            color: $text-secondary;
+        .actions-menu-wrapper {
+            position: relative;
             display: flex;
             align-items: center;
-            justify-content: center;
-            font-size: 1rem;
-            cursor: pointer;
-            transition: all 0.15s ease;
             flex-shrink: 0;
 
-            &:hover:not(:disabled) {
+            .btn-action-plus {
+                width: 34px;
+                height: 34px;
+                border-radius: 50%;
                 background: rgba(255, 255, 255, 0.08);
-                color: $accent-cyan;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                color: #d4d4d8;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 0.95rem;
+                cursor: pointer;
+                transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+                flex-shrink: 0;
+
+                &:hover:not(:disabled) {
+                    background: rgba(255, 255, 255, 0.16);
+                    color: #ffffff;
+                    transform: scale(1.04);
+                }
+
+                &.open {
+                    transform: rotate(45deg);
+                    background: rgba(255, 255, 255, 0.22);
+                    color: #ffffff;
+                }
+
+                &.has-tool {
+                    border-color: rgba(34, 211, 238, 0.5);
+                    color: $accent-cyan;
+                    box-shadow: 0 0 10px rgba(34, 211, 238, 0.2);
+                }
+
+                &:disabled {
+                    opacity: 0.4;
+                    cursor: not-allowed;
+                }
             }
 
-            &:disabled {
-                opacity: 0.4;
-                cursor: not-allowed;
+            .chat-actions-popup-menu {
+                position: absolute;
+                bottom: calc(100% + 12px);
+                left: 0;
+                min-width: 320px;
+                background: #1c1c22;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 16px;
+                padding: 6px;
+                box-shadow: 0 18px 45px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.05);
+                backdrop-filter: blur(20px);
+                z-index: 100;
+                animation: popupSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+
+                .action-menu-item {
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                    padding: 10px 12px;
+                    border-radius: 10px;
+                    cursor: pointer;
+                    transition: all 0.15s ease;
+                    user-select: none;
+
+                    &:hover {
+                        background: rgba(255, 255, 255, 0.08);
+                    }
+
+                    .action-item-icon {
+                        width: 34px;
+                        height: 34px;
+                        border-radius: 8px;
+                        background: rgba(255, 255, 255, 0.06);
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        color: #a1a1aa;
+                        font-size: 0.95rem;
+                        flex-shrink: 0;
+
+                        &.web-icon {
+                            color: $accent-cyan;
+                        }
+                    }
+
+                    &.active {
+                        background: rgba(34, 211, 238, 0.08);
+
+                        .action-item-icon.web-icon {
+                            background: rgba(34, 211, 238, 0.2);
+                            color: $accent-cyan;
+                        }
+                    }
+
+                    .action-item-info {
+                        flex: 1;
+                        display: flex;
+                        flex-direction: column;
+                        gap: 2px;
+
+                        .action-item-title-row {
+                            display: flex;
+                            align-items: center;
+                            justify-content: space-between;
+                        }
+
+                        .action-item-title {
+                            font-size: 0.875rem;
+                            font-weight: 500;
+                            color: #f4f4f5;
+                        }
+
+                        .action-item-desc {
+                            font-size: 0.725rem;
+                            color: #71717a;
+                            line-height: 1.3;
+                        }
+
+                        .status-badge {
+                            font-size: 0.625rem;
+                            font-weight: 600;
+                            padding: 2px 6px;
+                            border-radius: 6px;
+                            letter-spacing: 0.04em;
+
+                            &.on {
+                                background: rgba(34, 211, 238, 0.2);
+                                color: $accent-cyan;
+                                border: 1px solid rgba(34, 211, 238, 0.4);
+                            }
+
+                            &.off {
+                                background: rgba(255, 255, 255, 0.06);
+                                color: #71717a;
+                            }
+                        }
+                    }
+
+                    .action-item-check {
+                        color: $accent-cyan;
+                        font-size: 0.85rem;
+                        padding-left: 4px;
+                    }
+                }
+            }
+
+            @keyframes popupSlideIn {
+                from {
+                    opacity: 0;
+                    transform: translateY(8px) scale(0.97);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0) scale(1);
+                }
+            }
+        }
+
+        .active-tool-chip {
+            background: rgba(34, 211, 238, 0.12) !important;
+            border: 1px solid rgba(34, 211, 238, 0.35) !important;
+            color: #e4e4e7 !important;
+            box-shadow: 0 0 12px rgba(34, 211, 238, 0.15);
+
+            .text-cyan {
+                color: $accent-cyan;
             }
         }
 

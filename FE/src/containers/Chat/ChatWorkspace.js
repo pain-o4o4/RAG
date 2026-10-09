@@ -67,12 +67,15 @@ class ChatWorkspace extends Component {
         inputValue: '',
         attachedFiles: [],
         isDragging: false,
-        thinkingSeconds: 0
+        thinkingSeconds: 0,
+        enableWebSearch: false,
+        showActionsMenu: false
     };
 
     messagesEndRef = React.createRef();
     inputRef = React.createRef();
     fileInputRef = React.createRef();
+    menuRef = React.createRef();
     thinkingInterval = null;
 
     componentDidMount() {
@@ -83,6 +86,7 @@ class ChatWorkspace extends Component {
         if (this.inputRef.current) {
             this.inputRef.current.focus();
         }
+        document.addEventListener('mousedown', this.handleClickOutside);
     }
 
     componentDidUpdate(prevProps) {
@@ -120,7 +124,18 @@ class ChatWorkspace extends Component {
         if (this.thinkingInterval) {
             clearInterval(this.thinkingInterval);
         }
+        document.removeEventListener('mousedown', this.handleClickOutside);
     }
+
+    handleClickOutside = (e) => {
+        if (this.menuRef.current && !this.menuRef.current.contains(e.target)) {
+            this.setState({ showActionsMenu: false });
+        }
+    };
+
+    handleToggleActionsMenu = () => {
+        this.setState((prev) => ({ showActionsMenu: !prev.showActionsMenu }));
+    };
 
     scrollToBottom = () => {
         if (this.messagesEndRef.current) {
@@ -233,7 +248,7 @@ class ChatWorkspace extends Component {
     };
 
     handleSend = async () => {
-        const { inputValue, attachedFiles } = this.state;
+        const { inputValue, attachedFiles, enableWebSearch } = this.state;
         const { activeSessionId } = this.props;
 
         if (!inputValue.trim() && attachedFiles.length === 0) return;
@@ -244,15 +259,16 @@ class ChatWorkspace extends Component {
         // Clear input and files immediately for smooth UX
         this.setState({
             inputValue: '',
-            attachedFiles: []
+            attachedFiles: [],
+            showActionsMenu: false
         });
 
-        // Send message with attached files directly in one unified request
-        await this.props.dispatchSendMessage(activeSessionId, messageText, filesToUpload);
+        // Send message with attached files and web search toggle state
+        await this.props.dispatchSendMessage(activeSessionId, messageText, filesToUpload, enableWebSearch);
     };
 
     renderInputCard = () => {
-        const { inputValue, attachedFiles } = this.state;
+        const { inputValue, attachedFiles, enableWebSearch, showActionsMenu } = this.state;
         const { isSendingMessage, isUploading } = this.props;
         const isBusy = isSendingMessage || isUploading;
 
@@ -269,9 +285,26 @@ class ChatWorkspace extends Component {
                     disabled={isBusy}
                 />
 
-                {/* Attached Files Chips Tray */}
-                {attachedFiles.length > 0 && (
+                {/* Attached Files & Active Tools Chips Tray */}
+                {(attachedFiles.length > 0 || enableWebSearch) && (
                     <div className="attached-files-tray">
+                        {/* Active Web Search Pill */}
+                        {enableWebSearch && (
+                            <div className="file-chip-item active-tool-chip">
+                                <i className="fas fa-globe text-cyan me-1" />
+                                <span className="file-chip-name">Tìm kiếm trên mạng</span>
+                                <button
+                                    type="button"
+                                    className="btn-remove-chip"
+                                    onClick={() => this.setState({ enableWebSearch: false })}
+                                    title="Tắt tìm kiếm trên mạng"
+                                >
+                                    <i className="fas fa-times" />
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Uploaded File Chips */}
                         {attachedFiles.map((file, idx) => (
                             <div key={idx} className="file-chip-item">
                                 <i className={`fas ${this.getFileIcon(file.name)} me-1`} />
@@ -296,15 +329,67 @@ class ChatWorkspace extends Component {
 
                 {/* Textarea and Action Buttons */}
                 <div className="input-row-container">
-                    <button
-                        type="button"
-                        className="btn-attach-action"
-                        onClick={this.handleAttachClick}
-                        disabled={isBusy}
-                        title="Đính kèm tài liệu (PDF, DOCX, TXT, CSV...)"
-                    >
-                        <i className="fas fa-paperclip" />
-                    </button>
+                    {/* Plus Actions Button with Popup Menu */}
+                    <div className="actions-menu-wrapper" ref={this.menuRef}>
+                        <button
+                            type="button"
+                            className={`btn-action-plus ${showActionsMenu ? 'open' : ''} ${enableWebSearch ? 'has-tool' : ''}`}
+                            onClick={this.handleToggleActionsMenu}
+                            disabled={isBusy}
+                            title="Thêm tệp hoặc chọn công cụ"
+                        >
+                            <i className="fas fa-plus" />
+                        </button>
+
+                        {/* Modern Popup Menu */}
+                        {showActionsMenu && (
+                            <div className="chat-actions-popup-menu">
+                                <div
+                                    className="action-menu-item"
+                                    onClick={() => {
+                                        this.setState({ showActionsMenu: false });
+                                        this.handleAttachClick();
+                                    }}
+                                >
+                                    <div className="action-item-icon">
+                                        <i className="fas fa-paperclip" />
+                                    </div>
+                                    <div className="action-item-info">
+                                        <span className="action-item-title">Thêm hình & tệp</span>
+                                        <span className="action-item-desc">Tải lên từ máy tính (.pdf, .docx, .txt...)</span>
+                                    </div>
+                                </div>
+
+                                <div
+                                    className={`action-menu-item ${enableWebSearch ? 'active' : ''}`}
+                                    onClick={() => {
+                                        this.setState((prev) => ({
+                                            enableWebSearch: !prev.enableWebSearch,
+                                            showActionsMenu: false
+                                        }));
+                                    }}
+                                >
+                                    <div className="action-item-icon web-icon">
+                                        <i className="fas fa-globe" />
+                                    </div>
+                                    <div className="action-item-info">
+                                        <div className="action-item-title-row">
+                                            <span className="action-item-title">Tìm kiếm trên mạng</span>
+                                            {/* <span className={`status-badge ${enableWebSearch ? 'on' : 'off'}`}>
+                                                {enableWebSearch ? 'BẬT' : 'TẮT'}
+                                            </span> */}
+                                        </div>
+                                        <span className="action-item-desc">Tìm thông tin và tin tức theo thời gian thực</span>
+                                    </div>
+                                    {enableWebSearch && (
+                                        <div className="action-item-check">
+                                            <i className="fas fa-check" />
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
 
                     <textarea
                         ref={this.inputRef}
@@ -313,7 +398,9 @@ class ChatWorkspace extends Component {
                         placeholder={
                             attachedFiles.length > 0
                                 ? `Đã đính kèm ${attachedFiles.length} tệp. Nhập câu hỏi hoặc nhấn Gửi...`
-                                : 'Hỏi bất kỳ điều gì hoặc đính kèm tài liệu...'
+                                : enableWebSearch
+                                    ? 'Hỏi thông tin trên mạng hoặc đính kèm tài liệu...'
+                                    : 'Hỏi bất kỳ điều gì hoặc đính kèm tài liệu...'
                         }
                         value={inputValue}
                         onChange={this.handleInputChange}
@@ -475,9 +562,9 @@ class ChatWorkspace extends Component {
                                                 {/* User Text Bubble */}
                                                 {msg.content && msg.content.trim() && (
                                                     <div className="message-bubble-box user-bubble">
-                                                        <div 
-                                                            className="message-text-content" 
-                                                            dangerouslySetInnerHTML={{ __html: renderMarkdownContent(msg.content) }} 
+                                                        <div
+                                                            className="message-text-content"
+                                                            dangerouslySetInnerHTML={{ __html: renderMarkdownContent(msg.content) }}
                                                         />
                                                     </div>
                                                 )}
@@ -492,9 +579,9 @@ class ChatWorkspace extends Component {
                                         className="chat-row-item assistant-align"
                                     >
                                         <div className="message-bubble-box assistant-bubble">
-                                            <div 
-                                                className="message-text-content" 
-                                                dangerouslySetInnerHTML={{ __html: renderMarkdownContent(msg.content || '') }} 
+                                            <div
+                                                className="message-text-content"
+                                                dangerouslySetInnerHTML={{ __html: renderMarkdownContent(msg.content || '') }}
                                             />
 
                                             {/* Citation Sources */}
@@ -506,11 +593,29 @@ class ChatWorkspace extends Component {
                                                     </div>
                                                     <div className="citation-chips-group">
                                                         {sources.map((src, sIdx) => {
+                                                            const isWeb = src.document_id === 'web' || src.type === 'web' || Boolean(src.url);
                                                             const docName =
                                                                 src.document_name ||
                                                                 src.filename ||
                                                                 `Nguồn #${sIdx + 1}`;
                                                             const pageNum = src.page || src.page_number || 1;
+
+                                                            if (isWeb) {
+                                                                return (
+                                                                    <a
+                                                                        key={sIdx}
+                                                                        href={src.url || '#'}
+                                                                        target="_blank"
+                                                                        rel="noopener noreferrer"
+                                                                        className="citation-source-chip web-chip"
+                                                                        title={`Mở liên kết nguồn: ${src.url || docName}`}
+                                                                    >
+                                                                        <i className="fas fa-globe me-1 text-cyan" />
+                                                                        <span className="source-doc-name">{docName}</span>
+                                                                        <i className="fas fa-arrow-up-right-from-square ms-1 source-link-icon" />
+                                                                    </a>
+                                                                );
+                                                            }
 
                                                             return (
                                                                 <button
@@ -578,7 +683,7 @@ const mapStateToProps = (state) => ({
 
 const mapDispatchToProps = (dispatch) => ({
     dispatchFetchMessages: (id) => dispatch(fetchChatMessages(id)),
-    dispatchSendMessage: (id, content, files) => dispatch(sendMessage(id, content, files)),
+    dispatchSendMessage: (id, content, files, enableWebSearch) => dispatch(sendMessage(id, content, files, enableWebSearch)),
     dispatchCreateNewSession: (title) => dispatch(createNewSession(title)),
     dispatchUploadDocuments: (files) => dispatch(uploadDocumentsBatch(files)),
     dispatchSetInspectorSource: (src) => dispatch(setInspectorSource(src))

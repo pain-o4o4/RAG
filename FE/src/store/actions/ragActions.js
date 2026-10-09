@@ -184,7 +184,7 @@ export const fetchChatMessages = (sessionId) => {
     };
 };
 
-export const sendMessage = (sessionId, content, files = []) => {
+export const sendMessage = (sessionId, content, files = [], enableWebSearch = false) => {
     return async (dispatch, getState) => {
         const text = (content || '').trim();
         if (!text && (!files || files.length === 0)) return;
@@ -294,11 +294,11 @@ export const sendMessage = (sessionId, content, files = []) => {
                                 ensureStarted();
                                 dispatch({ type: actionTypes.STREAM_ASSISTANT_TOKEN, messageId: streamMsgId, text: '', done: true });
                             }
-                        });
+                        }, enableWebSearch);
                     } catch (streamErr) {
                         console.warn('Stream error, falling back to standard send:', streamErr);
                         if (!started) {
-                            const fallbackRes = await sendChatMessageApi(activeId, text);
+                            const fallbackRes = await sendChatMessageApi(activeId, text, enableWebSearch);
                             if (fallbackRes && fallbackRes.assistant_message) {
                                 dispatch({
                                     type: actionTypes.ADD_ASSISTANT_MESSAGE,

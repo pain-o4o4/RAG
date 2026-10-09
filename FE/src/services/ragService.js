@@ -61,8 +61,11 @@ export const getChatMessagesApi = (sessionId) => {
     return axios.get(`/api/v1/chat/sessions/${sessionId}/messages`);
 };
 
-export const sendChatMessageApi = (sessionId, content) => {
-    return axios.post(`/api/v1/chat/sessions/${sessionId}/messages`, { content });
+export const sendChatMessageApi = (sessionId, content, enableWebSearch = false) => {
+    return axios.post(`/api/v1/chat/sessions/${sessionId}/messages`, {
+        content,
+        enable_web_search: enableWebSearch
+    });
 };
 
 /**
@@ -70,7 +73,7 @@ export const sendChatMessageApi = (sessionId, content) => {
  * axios không hỗ trợ đọc stream trên trình duyệt nên dùng fetch.
  * callbacks: { onSources(list), onToken(text), onDone() }
  */
-export const streamChatMessageApi = async (sessionId, content, userId, callbacks = {}) => {
+export const streamChatMessageApi = async (sessionId, content, userId, callbacks = {}, enableWebSearch = false) => {
     const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
     let uid = userId;
     if (!uid) {
@@ -94,7 +97,10 @@ export const streamChatMessageApi = async (sessionId, content, userId, callbacks
     const res = await fetch(`${backendUrl}/api/v1/chat/sessions/${sessionId}/messages/stream`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ content })
+        body: JSON.stringify({
+            content,
+            enable_web_search: enableWebSearch
+        })
     });
 
     if (!res.ok || !res.body) {
