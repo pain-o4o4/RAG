@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 200
     TOP_K_RESULTS: int = 8
     SIMILARITY_THRESHOLD: float = 0.20
+    MAX_CONTEXT_CHARS: int = 8000
     EMBEDDING_DIMENSION: int = 768
     ALLOWED_EXTENSIONS: set[str] = {".pdf", ".docx", ".txt"}
     MAX_FILE_SIZE: int = 50 * 1024 * 1024

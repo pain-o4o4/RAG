@@ -171,11 +171,28 @@ class VectorStore:
                 filter=filter_func if target_doc_ids else None
             )
             results = [(doc, 1.0 / (1.0 + max(0.0, float(score)))) for doc, score in raw_results]
-        for i, (doc, score) in enumerate(results, 1):
-            print(f"[{i}] score similarity: {float(score):.4f}")
-        print("=============================================================")
-        for i, result in enumerate(results, 1):
-            print(f"FAISS RAW: {result}")
+
+
+        # for i, (doc, score) in enumerate(results, 1):
+        #     print(f"[{i}] score similarity: {float(score):.4f}")
+        #     print(f"[{i}] Document ID: {doc.metadata.get('document_id')}")
+        #     print(f"[{i}] Chunk Index: {doc.metadata.get('chunk_index')}")
+        #     print(f"[{i}] Content: {doc.page_content}")
+        #     print(f"[{i}] Metadata: {doc.metadata}")
+        
+        print("============================CHUNK lấy ra chưa lọc=================================")
+        print("Kiểu dữ liệu:", type(results))
+        print("Số lượng kết quả:", len(results))
+        print("top_k:", top_k)
+        print("Tổng vector FAISS:", vectorstore.index.ntotal)
+        print("search_k:", search_k)      
+
+        if results:
+            print("Kiểu phần tử đầu tiên:", type(results[0]))
+            print("Phần tử đầu tiên:", results[0])
+        print("============================CHUNK lấy ra chưa lọc=================================")
+
+
         matched_results = []
         for doc, score in results:
             float_score = float(score)
@@ -193,6 +210,6 @@ class VectorStore:
             if len(matched_results) >= top_k:
                 break
 
-        for i, matched in enumerate(matched_results, 1):
-            print(matched)
+        # for i, matched in enumerate(matched_results, 1):
+        #     print(matched)
         return matched_results

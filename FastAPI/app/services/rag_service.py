@@ -169,7 +169,7 @@ class RAGService:
         enable_web_search: bool = False,
     ) -> RAGResult:
         """Hàm đồng bộ xử lý câu hỏi: Quyết định gọi Tool -> Thực thi -> Sinh câu trả lời (kèm Auto-fallback)."""
-        tool_service = ToolService(self.db, self.vector_store, user_id, enable_web_search=enable_web_search)
+        tool_service = ToolService(self.db, self.vector_store, user_id, document_ids=document_ids, enable_web_search=enable_web_search)
         tools = tool_service.get_tools()
         tool_map = {t.name: t for t in tools}
 
@@ -200,8 +200,6 @@ class RAGService:
             t_args = tc.get("args", {})
             last_tool_name = t_name
             if t_name in tool_map:
-                if t_name == "search_knowledge_base" and "document_ids" not in t_args and document_ids:
-                    t_args["document_ids"] = [str(d) for d in document_ids]
                 obs = await tool_map[t_name].ainvoke(t_args)
 
         sources = tool_service.retrieved_sources
@@ -245,7 +243,7 @@ class RAGService:
         - Nhánh A (Chào hỏi): Bắn sources rỗng ngay -> Stream câu trả lời trực tiếp.
         - Nhánh B (Tra cứu Tool): Gọi Tool -> Bắn sources ngay -> Stream câu trả lời tổng hợp.
         """
-        tool_service = ToolService(self.db, self.vector_store, user_id, enable_web_search=enable_web_search)
+        tool_service = ToolService(self.db, self.vector_store, user_id, document_ids=document_ids, enable_web_search=enable_web_search)
         tools = tool_service.get_tools()
         tool_map = {t.name: t for t in tools}
 
@@ -282,8 +280,6 @@ class RAGService:
             t_args = tc.get("args", {})
             last_tool_name = t_name
             if t_name in tool_map:
-                if t_name == "search_knowledge_base" and "document_ids" not in t_args and document_ids:
-                    t_args["document_ids"] = [str(d) for d in document_ids]
                 obs = await tool_map[t_name].ainvoke(t_args)
 
         # 1. Bắn danh sách sources về UI ngay lập tức

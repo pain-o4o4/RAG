@@ -24,13 +24,32 @@ class ToolService:
         db: AsyncSession,
         vector_store: VectorStore,
         user_id: uuid.UUID,
+        document_ids: Optional[list[uuid.UUID]] = None,
         enable_web_search: bool = False
     ):
         self.db = db
         self.vector_store = vector_store
         self.user_id = user_id
+        self.document_ids = document_ids
         self.enable_web_search = enable_web_search
         self.retrieved_sources: list[dict] = []
+
+    @staticmethod
+    def _merge_chunk_content(prev_content: str, new_content: str) -> str:
+        """Khử phần trùng lặp (overlap) giữa đuôi chunk trước và đầu chunk sau khi gộp."""
+        max_check = min(len(prev_content), len(new_content), 400)
+        for overlap_len in range(max_check, 15, -1):
+            suffix = prev_content[-overlap_len:]
+            if new_content.startswith(suffix):
+                return prev_content + new_content[overlap_len:]
+
+        trimmed_new = new_content.lstrip()
+        for overlap_len in range(max_check, 15, -1):
+            suffix = prev_content[-overlap_len:]
+            if trimmed_new.startswith(suffix):
+                return prev_content + trimmed_new[overlap_len:]
+
+        return prev_content + "\n" + new_content
 
     def get_tools(self) -> list:
         """Tạo danh sách LangChain Tools sẵn sàng để bind vào LLM."""
@@ -45,9 +64,8 @@ class ToolService:
             Sử dụng công cụ này khi người dùng hỏi về kiến thức chuyên biệt, tài liệu nội bộ, số liệu cụ thể.
             KHÔNG sử dụng cho các câu chào hỏi xã giao, cảm ơn, hoặc liệt kê danh sách file.
             """
-            doc_uuids = None
-            if document_ids:
-                doc_uuids = [uuid.UUID(str(d)) for d in document_ids if d]
+            target_docs = document_ids if document_ids else self.document_ids
+            doc_uuids = [uuid.UUID(str(d)) for d in target_docs if d] if target_docs else None
 
             # 1. Tìm kiếm trong FAISS
             matched = self.vector_store.search(
@@ -58,7 +76,9 @@ class ToolService:
                 similarity_threshold=settings.SIMILARITY_THRESHOLD,
             )
             for i, chunk in enumerate(matched,1):
-                print("DEBUG: Chunk", i, ":", chunk)
+                print("=========================================CHUNK chưa merge ================= tối đa 8 chunk==============================================")
+                print("Chunk", i, ":", chunk['content'],"\n", "CORE: ", chunk['score'])
+                print('=====================================================================')
             if not matched:
                 return "Không tìm thấy đoạn văn bản nào phù hợp trong kho tài liệu cho câu hỏi này."
 
@@ -83,7 +103,9 @@ class ToolService:
                     doc_names[str(d_id)] = d_name
 
             # 3. Định dạng kết quả và lưu vết sources
-            formatted_chunks = []
+            
+            # BƯỚC 3A: Gom và tạo danh sách nguồn trích dẫn thô
+            valid_chunks = []
             for m in matched:
                 d_id = str(m.get("document_id", ""))
                 if d_id not in doc_names:
@@ -91,25 +113,74 @@ class ToolService:
 
                 d_name = doc_names[d_id]
                 page_num = m.get("metadata", {}).get("page_number", 1)
+                chunk_idx = m.get("chunk_index", 0)
                 snippet = m.get("content", "")
                 score = round(m.get("score", 0.0), 3)
 
-                source_item = {
+                valid_chunks.append({
                     "document_id": d_id,
                     "document_name": d_name,
-                    "chunk_index": m.get("chunk_index"),
+                    "chunk_index": chunk_idx,
                     "similarity_score": score,
                     "page": page_num,
-                    "snippet": snippet[:250] + ("..." if len(snippet) > 250 else ""),
-                }
-                self.retrieved_sources.append(source_item)
+                    "content": snippet,
+                })
+
+            # BƯỚC 3B: SẮP XẾP LẠI THEO THỨ TỰ ĐỌC TỰ NHIÊN (Natural Reading Order)
+            # Sắp xếp theo: Tên tài liệu -> Trang -> Thứ tự chunk
+            valid_chunks.sort(
+                key=lambda x: (x["document_name"], x["page"], x["chunk_index"])
+            )
+
+            # BƯỚC 3C: GỘP CÁC CHUNK LIỀN KỀ (Khử Overlap) & KIỂM SOÁT NGÂN SÁCH (Chống Overload)
+            merged_chunks = []
+            max_context_chars = getattr(settings, "MAX_CONTEXT_CHARS", 8000)
+            current_total_chars = 0
+
+            for item in valid_chunks:
+                # Kiểm tra chống Overload: Dừng khi tổng ký tự context đã chạm ngưỡng trần an toàn
+                if current_total_chars >= max_context_chars:
+                    break
+
+                # Kiểm tra nếu chunk này liền kề với chunk trước đó (cùng file, cùng trang, chunk_index liên tiếp)
+                if (
+                    merged_chunks
+                    and merged_chunks[-1]["document_id"] == item["document_id"]
+                    and merged_chunks[-1]["page"] == item["page"]
+                    and item["chunk_index"] == merged_chunks[-1]["chunk_index"] + 1
+                ):
+                    prev_item = merged_chunks[-1]
+                    prev_item["content"] = self._merge_chunk_content(prev_item["content"], item["content"])
+                    prev_item["chunk_index"] = item["chunk_index"]
+                    prev_item["similarity_score"] = max(prev_item["similarity_score"], item["similarity_score"])
+                else:
+                    merged_chunks.append(item.copy())
+
+                current_total_chars = sum(len(c["content"]) for c in merged_chunks)
+
+            # BƯỚC 3D: Tạo formatted_chunks cho LLM và lưu retrieved_sources
+            formatted_chunks = []
+            for item in merged_chunks:
+                snippet_text = item["content"]
+                self.retrieved_sources.append({
+                    "document_id": item["document_id"],
+                    "document_name": item["document_name"],
+                    "chunk_index": item["chunk_index"],
+                    "similarity_score": item["similarity_score"],
+                    "page": item["page"],
+                    "snippet": snippet_text[:250] + ("..." if len(snippet_text) > 250 else ""),
+                })
 
                 formatted_chunks.append(
-                    f"[Tài liệu: '{d_name}', Trang {page_num}]:\n{snippet}"
+                    f"[Tài liệu: '{item['document_name']}', Trang {item['page']}]:\n{item['content']}"
                 )
 
-            for idx, src in enumerate(self.retrieved_sources, 1):
-                print(src)
+
+            for idx, src in enumerate(merged_chunks, 1):
+                print("==================================")
+                print("CHUNK ĐÃ MERGE VÀ XỬ LÝ OVERLAP")
+                print("Chunk", idx, ":", src['content'],":","PAGE: ",src['page'],"\n", "CORE: ", src['similarity_score'])
+                print("==================================")
             
 
             if not formatted_chunks:
