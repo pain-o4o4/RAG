@@ -1,7 +1,9 @@
 import os
+import re
 import uuid
 from typing import Optional, Any
 
+from rank_bm25 import BM25Plus
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangchainDocument
 from app.core.config import settings
@@ -105,13 +107,19 @@ class VectorStore:
             print(f"[VectorStore] Lỗi khi xóa vector khỏi FAISS: {e}")
             return 0
 
+    @staticmethod
+    def _tokenize_vietnamese(text: str) -> list[str]:
+        """Tách từ đơn giản và chuẩn hóa chữ thường cho BM25."""
+        return [w.lower() for w in re.findall(r"\w+", text)]
+
     def search(
         self,
         user_id: uuid.UUID,
         query: str,
-        top_k: int = 4,
+        top_k: int = settings.TOP_K_RESULTS,
         document_ids: Optional[list[uuid.UUID]] = None,
-        similarity_threshold: float = settings.SIMILARITY_THRESHOLD
+        similarity_threshold: float = settings.SIMILARITY_THRESHOLD,
+        enable_hybrid: bool = True
     ) -> list[dict[str, Any]]:
         index_name = self._get_index_name(user_id)
         faiss_path = self._get_faiss_path(index_name)
@@ -127,8 +135,6 @@ class VectorStore:
                 )
             except Exception as e:
                 print(f"[VectorStore] Error loading FAISS: {e}")
-
-
 
         if not vectorstore:
             return []
@@ -155,48 +161,87 @@ class VectorStore:
         except Exception as e:
             print(f"[VectorStore] Warning during query embedding check: {e}")
 
-        # Tìm kiếm k lớn hơn để sau đó lọc threshold và doc_ids
-        search_k = min(vectorstore.index.ntotal, max(top_k * 4, 10))
-        
+        # 1. Thu thập danh sách documents ứng viên (đã lọc theo target_doc_ids nếu có)
+        all_docs_in_store = list(vectorstore.docstore._dict.values())
+        candidate_docs = [d for d in all_docs_in_store if filter_func(d.metadata)]
+        if not candidate_docs:
+            return []
+
+        # 2. VECTOR SEARCH (FAISS L2 -> Similarity)
+        search_k = min(vectorstore.index.ntotal, max(top_k * 4, 15))
         try:
-            results = vectorstore.similarity_search_with_relevance_scores(
+            raw_vector_results = vectorstore.similarity_search_with_score(
                 query,
                 k=search_k,
                 filter=filter_func if target_doc_ids else None
             )
-        except Exception:
-            raw_results = vectorstore.similarity_search_with_score(
-                query,
-                k=search_k,
-                filter=filter_func if target_doc_ids else None
-            )
-            results = [(doc, 1.0 / (1.0 + max(0.0, float(score)))) for doc, score in raw_results]
+        except Exception as e:
+            print(f"[VectorStore] FAISS search error: {e}")
+            raw_vector_results = []
 
+        vector_ranked_docs: list[tuple[LangchainDocument, float]] = []
+        for doc, score in raw_vector_results:
+            sim = 1.0 / (1.0 + max(0.0, float(score)))
+            vector_ranked_docs.append((doc, sim))
 
-        # for i, (doc, score) in enumerate(results, 1):
-        #     print(f"[{i}] score similarity: {float(score):.4f}")
-        #     print(f"[{i}] Document ID: {doc.metadata.get('document_id')}")
-        #     print(f"[{i}] Chunk Index: {doc.metadata.get('chunk_index')}")
-        #     print(f"[{i}] Content: {doc.page_content}")
-        #     print(f"[{i}] Metadata: {doc.metadata}")
-        
-        print("============================CHUNK lấy ra chưa lọc=================================")
-        print("Kiểu dữ liệu:", type(results))
-        print("Số lượng kết quả:", len(results))
-        print("top_k:", top_k)
-        print("Tổng vector FAISS:", vectorstore.index.ntotal)
-        print("search_k:", search_k)      
+        # 3. BM25 SPARSE SEARCH (BM25Plus - Khớp chính xác từ khóa / mã sản phẩm / số liệu)
+        bm25_ranked_docs: list[tuple[LangchainDocument, float]] = []
+        if enable_hybrid and candidate_docs:
+            try:
+                tokenized_corpus = [self._tokenize_vietnamese(d.page_content) for d in candidate_docs]
+                bm25_model = BM25Plus(tokenized_corpus)
+                query_tokens = self._tokenize_vietnamese(query)
+                bm25_raw_scores = bm25_model.get_scores(query_tokens)
 
-        if results:
-            print("Kiểu phần tử đầu tiên:", type(results[0]))
-            print("Phần tử đầu tiên:", results[0])
-        print("============================CHUNK lấy ra chưa lọc=================================")
+                bm25_candidates = [
+                    (candidate_docs[i], float(bm25_raw_scores[i]))
+                    for i in range(len(candidate_docs))
+                    if bm25_raw_scores[i] > 0
+                ]
+                bm25_candidates.sort(key=lambda x: x[1], reverse=True)
+                bm25_ranked_docs = bm25_candidates[:search_k]
+            except Exception as e:
+                print(f"[VectorStore] BM25 indexing error: {e}")
+                bm25_ranked_docs = []
 
+        # 4. RECIPROCAL RANK FUSION (RRF)
+        K_RRF = 60
+        rrf_scores: dict[str, float] = {}
+        doc_registry: dict[str, tuple[LangchainDocument, float, float]] = {}
+
+        # Ghi nhận Rank từ Vector Search (weight = 1.0)
+        for rank, (doc, vec_score) in enumerate(vector_ranked_docs, 1):
+            key = f"{doc.metadata.get('document_id')}_{doc.metadata.get('chunk_index')}"
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + (1.0 / (K_RRF + rank))
+            doc_registry[key] = (doc, vec_score, 0.0)
+
+        # Ghi nhận Rank từ BM25 Search (weight = 0.8)
+        for rank, (doc, bm25_score) in enumerate(bm25_ranked_docs, 1):
+            key = f"{doc.metadata.get('document_id')}_{doc.metadata.get('chunk_index')}"
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + (0.8 / (K_RRF + rank))
+            if key in doc_registry:
+                existing_doc, existing_vec, _ = doc_registry[key]
+                doc_registry[key] = (existing_doc, existing_vec, bm25_score)
+            else:
+                doc_registry[key] = (doc, 0.0, bm25_score)
+
+        # 5. TÍNH ĐIỂM TỔNG HỢP & LỌC THEO THRESHOLD
+        sorted_keys = sorted(rrf_scores.keys(), key=lambda k: rrf_scores[k], reverse=True)
+        max_bm25 = max([v[2] for v in doc_registry.values()] or [1.0]) or 1.0
 
         matched_results = []
-        for doc, score in results:
-            float_score = float(score)
-            if similarity_threshold > 0 and float_score < similarity_threshold:
+        for key in sorted_keys:
+            doc, vec_score, bm25_score = doc_registry[key]
+            norm_bm25 = round(bm25_score / max_bm25, 4) if max_bm25 > 0 else 0.0
+
+            if vec_score > 0 and bm25_score > 0:
+                final_score = round(0.7 * vec_score + 0.3 * norm_bm25, 4)
+            elif vec_score > 0:
+                final_score = round(vec_score, 4)
+            else:
+                final_score = round(0.4 + 0.4 * norm_bm25, 4)
+
+            if similarity_threshold > 0 and final_score < similarity_threshold:
                 continue
 
             matched_results.append({
@@ -204,12 +249,12 @@ class VectorStore:
                 "chunk_index": doc.metadata.get("chunk_index"),
                 "content": doc.page_content,
                 "metadata": doc.metadata,
-                "score": round(float_score, 4)
+                "score": final_score,
+                "vector_score": round(vec_score, 4),
+                "bm25_score": round(bm25_score, 4),
             })
 
             if len(matched_results) >= top_k:
                 break
 
-        # for i, matched in enumerate(matched_results, 1):
-        #     print(matched)
         return matched_results

@@ -71,8 +71,7 @@ class DocumentService:
                     content=d.page_content,
                     vector_id=v_id,
                     chunk_metadata=d.metadata,
-                    # token_count=max(1, len(d.page_content) // 4),
-                    token_count=2048
+                    token_count=max(1, len(d.page_content) // 4)
                 )
                 self.db.add(db_chunk)
 
